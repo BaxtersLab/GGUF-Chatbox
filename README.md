@@ -2,46 +2,152 @@
 
 # GGUF Chatbox
 
-A Windows desktop app built with Tauri v2 that runs local GGUF language models through **llama-server** and exposes them as OpenAI-compatible endpoints — so tools like [Continue.dev](https://continue.dev), custom agents, and any OpenAI-compatible client can connect without cloud dependencies.
+A Windows desktop app built with [Tauri v2](https://tauri.app) that runs local GGUF language models through **llama-server** and exposes them as OpenAI-compatible endpoints — so tools like [Continue.dev](https://continue.dev), custom agents, and any OpenAI-compatible client can connect without cloud dependencies.
 
 ---
 
-## What it does
+## Features
 
-- Loads any GGUF model file and starts a local `llama-server` instance
-- Auto-detects VRAM and calculates optimal GPU layers and context size
-- Proxies requests on `127.0.0.1:8080` (OpenAI-compatible `/v1/chat/completions`)
-- Reads model metadata from the GGUF file and caches a **model card** per model
-- Applies **app profiles** (coding agent, literary cognition, audio synthesis, general) that tune temperature, token limits, and context caps per use case
-- Supports vision inference via a secondary llava/clip server on port 8082
-- Supports audio tagging and transcription via a Python listening server on port 8083
-- Downloads models directly from HuggingFace with resume support
-- Writes Continue.dev `config.yaml` for the active workspace automatically
+- Loads any GGUF model and starts a local `llama-server` instance automatically
+- Auto-detects VRAM and calculates optimal GPU layers and context window size
+- Proxies requests on `127.0.0.1:8080` with an OpenAI-compatible `/v1/chat/completions` API
+- **Model card system** — reads GGUF metadata headers and caches a card per model with architecture, quant format, native context length, and recommended parameters
+- **App profile system** — per-use-case parameter presets (coding agent, literary cognition, audio synthesis, general) applied automatically on server start
+- **Vision inference** via a secondary llava/clip server on port 8082
+- **Audio intelligence** via a Python listening server on port 8083 (genre tagging, transcription, audio review)
+- HuggingFace model downloader with resume support and automatic card population
+- Writes Continue.dev `config.yaml` for the active workspace
+- Expansion slot plugin system in the UI — 11 slots, each independently initialised
+- Context Echo — adaptive system prompt injection that scales with conversation depth
+- Hot Rod Tuner integration for live inference parameter adjustment
 
 ---
 
 ## Requirements
 
-- Windows 10/11
-- [Rust toolchain](https://rustup.rs/) (for building from source)
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) — auto-downloaded on first run if not found
-- Python 3.10+ (optional — required only for the listening server and configurator GUI)
-- A GGUF model file
+| Requirement | Notes |
+|-------------|-------|
+| Windows 10 or 11 (64-bit) | The app is Windows-only at this time |
+| [Rust toolchain](https://rustup.rs/) | Required to build from source |
+| [Node.js](https://nodejs.org/) (optional) | Only needed if you modify the frontend |
+| llama.cpp | Auto-downloaded on first launch if not found |
+| NVIDIA GPU (optional) | CPU inference works; GPU strongly recommended for larger models |
+| Python 3.10+ (optional) | Required only for the listening server and configurator GUI |
 
 ---
 
-## Building from source
+## Installation
+
+### Option A — Build from source
+
+1. **Install Rust**
+
+   ```powershell
+   winget install Rustlang.Rustup
+   rustup update stable
+   ```
+
+2. **Install the Tauri CLI**
+
+   ```powershell
+   cargo install tauri-cli
+   ```
+
+3. **Clone the repository**
+
+   ```powershell
+   git clone https://github.com/BaxtersLab/GGUF-Chatbox.git
+   cd "GGUF-Chatbox"
+   ```
+
+4. **Build and run in development mode**
+
+   ```powershell
+   cargo tauri dev
+   ```
+
+   On first run, if `llama-server` is not found the app will download the latest llama.cpp release from GitHub automatically (CUDA build if an NVIDIA GPU is detected, CPU build otherwise).
+
+5. **Build a release installer** (optional)
+
+   ```powershell
+   cargo tauri build
+   ```
+
+   The installer and standalone executable are placed in `src-tauri/target/release/bundle/`.
+
+### Option B — Install Python backend (optional, for audio and configurator features)
+
+The listening server and configurator GUI require Python and a small set of packages.
 
 ```powershell
-# Install Tauri CLI if you don't have it
-cargo install tauri-cli
+cd backend
+pip install -r configurator/requirements.txt
 
-# Build and run in dev mode
-cargo tauri dev
-
-# Build a release installer
-cargo tauri build
+# Optional: audio intelligence dependencies
+pip install mutagen openai-whisper
+# For deep learning genre tagging (GPU recommended):
+pip install musicnn
 ```
+
+---
+
+## How to use
+
+### 1. Load a model
+
+Click **Browse** or **Scan Folder** to find a `.gguf` file. The app reads the model header and builds a card showing architecture, quantisation, native context length, and layer count. VRAM is queried automatically and GPU layers are calculated to fit the model into available memory.
+
+### 2. Select an App Profile
+
+Open **Slot 9 — Model Card** in the expansion tray. Use the profile dropdown to choose the preset that matches your use case:
+
+| Profile | Best for |
+|---------|----------|
+| **General** | Default — uses the model's own recommended parameters |
+| **Coding Agent** | Low temperature (0.1), unlimited output, 8 K context cap |
+| **Literary Cognition** | Higher temperature (0.85), unlimited output |
+| **Exotic Bass Maker** | Creative/generative audio synthesis workflows |
+
+Custom profiles can be added by editing `~/.gguf-chatbox/app_profiles.json`.
+
+### 3. Start the server
+
+Click **Start Server**. The app:
+- Starts `llama-server` on `127.0.0.1:8081` (internal)
+- Starts the OpenAI-compatible proxy on `127.0.0.1:8080` (public)
+- Applies the active profile's parameter overrides to the server launch flags
+
+The **Server** panel shows status (Starting → Running) and the endpoint URL.
+
+### 4. Connect Continue.dev (or any OpenAI-compatible client)
+
+Use the **Write Config** button to generate a `.continue/config.yaml` for your current workspace, or add manually:
+
+```yaml
+models:
+  - name: my-local-model
+    provider: openai
+    model: <your-model-name>
+    apiBase: http://127.0.0.1:8080
+    apiKey: none
+```
+
+### 5. Download a model from HuggingFace
+
+Paste a direct `.gguf` download URL from HuggingFace into the **HF Fetcher** slot (slot 4) and click Download. The download supports resume — if interrupted, just paste the same URL again. After download, the model card is populated automatically with the HuggingFace repo ID.
+
+### 6. Enrich a model card with HuggingFace metadata
+
+Open **Slot 9 — Model Card** after loading a model and click **Fetch HF README**. Enter the repo ID (e.g. `Qwen/Qwen3-8B`). The README is fetched and merged into the cached card — description and temperature recommendations are extracted where present.
+
+### 7. Vision inference (slot 7)
+
+Set paths to a llava-compatible model and its `mmproj` file in **Advanced Settings**, then start the Vision Server. Drop an image into the Vision slot and click Annotate, OCR, or Analyze.
+
+### 8. Audio intelligence (slot 8)
+
+Set a Python interpreter and (optionally) model weights in **Advanced Settings**, then start the Listening Server. Browse an audio file and run Generate Tags, Transcribe, or Review.
 
 ---
 
@@ -49,79 +155,91 @@ cargo tauri build
 
 | Port | Service |
 |------|---------|
-| 8080 | OpenAI-compatible proxy (public) |
-| 8081 | llama-server (internal — do not expose) |
+| 8080 | OpenAI-compatible proxy — connect your tools here |
+| 8081 | llama-server internal — not exposed outside localhost |
 | 8082 | Vision server (llava/clip) |
-| 8083 | Listening server (audio intelligence) |
+| 8083 | Listening server (audio intelligence, Python) |
 
 ---
 
-## App profiles
+## File locations
 
-Profiles are stored in `~/.gguf-chatbox/app_profiles.json` and applied automatically when the server starts. The default profiles are:
-
-| Profile | Temperature | Max Tokens | Ctx Cap |
-|---------|------------|------------|---------|
-| General | model default | model default | none |
-| Coding Agent | 0.1 | unlimited | 8192 |
-| Literary Cognition | 0.85 | unlimited | none |
-| Exotic Bass Maker | 0.7 | 512 | 4096 |
-
-Select the active profile from the **Model Card** panel (slot 9) in the app. The profile is applied the next time you start the server.
+| Path | Contents |
+|------|----------|
+| `~/.gguf-chatbox/settings.json` | App settings (persisted across sessions) |
+| `~/.gguf-chatbox/app_profiles.json` | App profile presets |
+| `~/.gguf-chatbox/cards/<stem>.json` | Cached model cards |
+| `~/.gguf-chatbox/models/` | Default model download directory |
+| `~/.gguf-chatbox/uploads/` | Temporary image uploads for vision inference |
 
 ---
 
-## Model cards
+## Dependencies and Licenses
 
-When a model is loaded, GGUF Chatbox reads its metadata header and builds a card containing:
-- Architecture, author, quantisation, native context length, layer count
-- Recommended inference parameters (if present in the GGUF metadata)
-- HuggingFace repo ID (populated automatically when downloading from HF)
+### Rust crates (compiled into the app)
 
-Cards are cached as JSON at `~/.gguf-chatbox/cards/<model-stem>.json`. You can enrich a card with the model's HuggingFace README by clicking **Fetch HF README** in the Model Card panel.
+| Crate | Version | License | Purpose |
+|-------|---------|---------|---------|
+| [tauri](https://github.com/tauri-apps/tauri) | 2.x | MIT / Apache-2.0 | Desktop app framework (Rust + WebView) |
+| [tauri-build](https://github.com/tauri-apps/tauri) | 2.x | MIT / Apache-2.0 | Tauri build-time code generation |
+| [serde](https://github.com/serde-rs/serde) | 1.x | MIT / Apache-2.0 | Serialisation / deserialisation framework |
+| [serde_json](https://github.com/serde-rs/json) | 1.x | MIT / Apache-2.0 | JSON serialisation |
+| [ureq](https://github.com/algesten/ureq) | 2.x | MIT / Apache-2.0 | Synchronous HTTP client (downloads, HF README fetch) |
+| [rfd](https://github.com/PolyMeilex/rfd) | 0.14 | MIT | Native file/folder picker dialogs |
+| [dirs](https://github.com/dirs-dev/dirs-rs) | 5.x | MIT / Apache-2.0 | Platform home directory resolution |
+| [zip](https://github.com/zip-rs/zip2) | 2.x | MIT | ZIP extraction (llama.cpp auto-installer) |
+| [base64](https://github.com/marshallpierce/rust-base64) | 0.21 | MIT / Apache-2.0 | Base64 encode/decode (vision data URLs) |
+| [once_cell](https://github.com/matklad/once_cell) | 1.x | MIT / Apache-2.0 | Lazy static initialisation |
+| [serde_json](https://github.com/serde-rs/json) | 1.x | MIT / Apache-2.0 | JSON for tool call payloads |
+| [sha2](https://github.com/RustCrypto/hashes) | 0.10 | MIT / Apache-2.0 | SHA-256 hashing (utils crate) |
+| [hex](https://github.com/KokaKiwi/rust-hex) | 0.4 | MIT / Apache-2.0 | Hex encoding (utils crate) |
+| [chrono](https://github.com/chronotope/chrono) | 0.4 | MIT / Apache-2.0 | Date/time (logging crate) |
+| [windows-sys](https://github.com/microsoft/windows-rs) | 0.52 | MIT / Apache-2.0 | Windows API bindings (GPU query, job objects) |
 
----
+### Python packages (optional — listening server and configurator GUI)
 
-## Continue.dev integration
+| Package | License | Purpose |
+|---------|---------|---------|
+| [PyQt5](https://riverbankcomputing.com/software/pyqt/) | GPL v3 / Commercial | Configurator GUI toolkit |
+| [requests](https://github.com/psf/requests) | Apache-2.0 | HTTP client used by configurator |
+| [PyYAML](https://github.com/yaml/pyyaml) | MIT | YAML parsing for Continue.dev config |
+| [mutagen](https://github.com/quodlibet/mutagen) | GPL v2 | Audio tag reading in listening server |
+| [openai-whisper](https://github.com/openai/whisper) | MIT | Audio transcription |
+| [musicnn](https://github.com/jordipons/musicnn) | ISC | Deep-learning audio tagging (optional) |
 
-Point Continue.dev at the proxy:
+### External tools (downloaded/installed separately)
 
-```yaml
-models:
-  - name: local-model
-    provider: openai
-    model: your-model-name
-    apiBase: http://127.0.0.1:8080
-    apiKey: none
-```
+| Tool | License | Purpose |
+|------|---------|---------|
+| [llama.cpp](https://github.com/ggerganov/llama.cpp) | MIT | GGUF model inference engine and server |
+| [llama-server](https://github.com/ggerganov/llama.cpp) | MIT | OpenAI-compatible HTTP server (part of llama.cpp) |
 
-Use the **Write Continue Config** button in the app to generate this automatically for the current workspace.
-
----
-
-## Project structure
-
-```
-gguf chatbox/
-├── src-tauri/          # Tauri app shell and Rust command handlers
-├── frontend/           # HTML/JS/CSS UI (no framework — vanilla)
-├── crates/
-│   ├── adaptive_llama/ # Model loading, GPU detection, model card reader
-│   ├── server/         # llama-server manager and OpenAI proxy
-│   ├── context_echo/   # Adaptive system prompt injection
-│   ├── tool_belt/      # Built-in tool registry for function calling
-│   ├── logging/        # Structured logging
-│   ├── error_system/   # Error classification and GPU recovery
-│   └── utils/          # Shared utilities
-├── backend/
-│   ├── configurator/   # Python GUI for Continue.dev profile management
-│   └── listening_server.py  # Audio intelligence server (port 8083)
-├── assets/             # Icons and banner
-└── tools/              # CLI helpers for config management
-```
+> **Note on PyQt5:** PyQt5 is licensed under the GPL v3, which applies to the configurator GUI component only. The core Tauri app (Rust) is MIT/Apache-2.0. If you distribute a modified version of the configurator GUI you must comply with GPL v3 terms. The remainder of the application is unaffected.
 
 ---
 
 ## License
 
-MIT
+This project is released under the **MIT License**.
+
+```
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
