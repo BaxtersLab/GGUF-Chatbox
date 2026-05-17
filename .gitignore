@@ -1,0 +1,44 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# GGUF model files (large — store externally)
+*.gguf
+*.GGUF
+*.bin
+*.safetensors
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+
+# IDE / OS
+.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# App data (generated at runtime — not source)
+*.gguf-chatbox/
+*.part
+
+# Tauri build outputs
+src-tauri/target/
+src-tauri/WixTools/
+
+# Node (if frontend ever gets a build step)
+node_modules/

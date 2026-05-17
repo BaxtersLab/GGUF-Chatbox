@@ -1,0 +1,2 @@
+were going to try and add tool capabilities to the llm if we need to make a module or crate
+for each type of tool then lets go ahead and see what open source tools we can use in our crates. then we can list them below:

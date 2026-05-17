@@ -1,0 +1,71 @@
+{
+  "productName": "GGUF Chatbox",
+  "version": "0.1.0",
+  "identifier": "com.baxter.gguf-chatbox",
+  "build": {
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "splash",
+        "url": "splash.html",
+        "title": "GGUF Chatbox",
+        "width": 800,
+        "height": 280,
+        "decorations": false,
+        "resizable": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": true
+      },
+      {
+        "label": "main",
+        "url": "index.html",
+        "title": "GGUF Chatbox",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "decorations": false,
+        "transparent": true
+      },
+      {
+        "label": "advanced-settings",
+        "url": "advanced.html",
+        "title": "GGUF Chatbox — Advanced Settings",
+        "width": 520,
+        "height": 480,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "decorations": true
+      },
+      {
+        "label": "debug-terminal",
+        "url": "terminal.html",
+        "title": "GGUF Chatbox — Debug Terminal",
+        "width": 720,
+        "height": 400,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

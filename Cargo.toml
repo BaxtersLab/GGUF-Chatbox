@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/adaptive_llama",
+    "crates/utils",
+    "crates/logging",
+    "crates/error_system",
+    "crates/context_echo",
+    "crates/server",
+    "crates/tool_belt",
+    "src-tauri",
+]
+resolver = "2"

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GGUF Chatbox</title>
+  <link rel="stylesheet" href="main.css" />
+</head>
+<body>
+  <!-- ── Chat Screen ─────────────────────────────────────────────────────── -->
+  <div id="screen-chat" class="screen">
+
+    <!-- Left: CWL4 sidebar -->
+    <div id="cwl4-sidebar" class="cwl4-sidebar">
+      <button class="cwl4-btn" data-cwl="1" title="Recalibration">&#x1F504;</button>
+      <button class="cwl4-btn" data-cwl="2" title="Gated Spillway 1">S1</button>
+      <button class="cwl4-btn" data-cwl="3" title="Gated Spillway 2">S2</button>
+      <button class="cwl4-btn" data-cwl="4" title="Gated Spillway 3">S3</button>
+    </div>
+
+    <!-- CWL4 pop-out panels (position:fixed, rendered over chat) -->
+    <div class="cwl4-panel" id="cwl4-panel-1" style="display:none">
+      <div class="cwl4-panel-header">
+        <span>&#x1F504; Recalibration</span>
+        <button class="cwl4-panel-close" data-cwl="1">&times;</button>
+      </div>
+      <div class="cwl4-panel-content" id="cwl4-slot-1-content"></div>
+    </div>
+    <div class="cwl4-panel" id="cwl4-panel-2" style="display:none">
+      <div class="cwl4-panel-header">
+        <span>&#x1F6AA; Gated Spillway 1</span>
+        <button class="cwl4-panel-close" data-cwl="2">&times;</button>
+      </div>
+      <div class="cwl4-panel-content" id="cwl4-slot-2-content"></div>
+    </div>
+    <div class="cwl4-panel" id="cwl4-panel-3" style="display:none">
+      <div class="cwl4-panel-header">
+        <span>&#x1F6AA; Gated Spillway 2</span>
+        <button class="cwl4-panel-close" data-cwl="3">&times;</button>
+      </div>
+      <div class="cwl4-panel-content" id="cwl4-slot-3-content"></div>
+    </div>
+    <div class="cwl4-panel" id="cwl4-panel-4" style="display:none">
+      <div class="cwl4-panel-header">
+        <span>&#x1F6AA; Gated Spillway 3</span>
+        <button class="cwl4-panel-close" data-cwl="4">&times;</button>
+      </div>
+      <div class="cwl4-panel-content" id="cwl4-slot-4-content"></div>
+    </div>
+
+    <!-- Center: chat window -->
+    <div id="chat-area" class="chat-area">
+      <div id="chat-header" class="chat-header" data-tauri-drag-region>
+        <span id="model-indicator" class="model-indicator off" title="No model loaded"></span>
+        <span id="chat-model-label" class="chat-model-label">No model loaded</span>
+        <span id="no-model-warning" class="no-model-warning">No model loaded</span>
+        <span id="hw-warning" class="hw-warning hidden">&#x26A0; Set CPU/GPU</span>
+        <button id="btn-model-tray" class="model-loader-btn" title="Load Model">Model Loader</button>
+        <button id="btn-server-tray" class="server-tray-btn" title="Server">
+          <span id="server-beacon" class="server-beacon beacon-stopped"></span>
+          SERVER
+        </button>
+        <button id="btn-settings" title="Settings">&#x2699;</button>
+        <button id="btn-advanced" title="Advanced Settings">&#x2699;+</button>
+        <div class="window-controls">
+          <button id="btn-win-minimize" class="win-ctrl-btn" title="Minimize">&#x2500;</button>
+          <button id="btn-win-close" class="win-ctrl-btn win-close" title="Close">&#x2715;</button>
+        </div>
+      </div>
+
+      <!-- Model loader tray -->
+      <div id="model-tray" class="model-tray" style="display:none">
+        <div class="model-tray-row">
+          <input type="text" id="model-folder-path" class="model-folder-path" placeholder="Select a models folder…" readonly />
+          <button id="btn-browse-folder" class="model-tray-btn">Browse</button>
+        </div>
+        <div id="model-tray-list" class="model-tray-list">
+          <p class="model-tray-empty">Browse to a folder containing model subfolders.</p>
+        </div>
+        <div class="model-tray-actions">
+          <button id="btn-tray-load" disabled>Load Model</button>
+          <button id="btn-tray-eject" class="model-tray-eject" disabled title="Eject current model">&#x23CF; Eject</button>
+        </div>
+        <div id="model-tray-status" class="model-tray-status"></div>
+      </div>
+
+      <!-- Server tray pop-out panel -->
+      <div id="server-tray" class="server-tray" style="display:none">
+        <div class="server-tray-header">
+          <span>SERVER</span>
+          <button id="btn-server-tray-close">&times;</button>
+        </div>
+        <div class="server-tray-content">
+          <div class="srv-row">
+            <span class="srv-label">Status:</span>
+            <span id="srv-status-text" class="srv-status-text">Stopped</span>
+          </div>
+          <div class="srv-row">
+            <span class="srv-label">Endpoint:</span>
+            <span class="srv-endpoint">http://127.0.0.1:8080/v1</span>&nbsp;
+            <button id="btn-srv-copy-endpoint">Copy</button>
+          </div>
+          <div class="srv-row">
+            <span class="srv-label">Model:</span>
+            <span id="srv-model-name" class="srv-value">—</span>
+          </div>
+          <div class="srv-actions">
+            <button id="btn-srv-start">Start Server</button>
+            <button id="btn-srv-stop" disabled>Stop Server</button>
+          </div>
+          <hr class="srv-sep" />
+          <div class="srv-section-label">Continue IDE Auto-Config</div>
+          <div class="srv-row">
+            <input type="text" id="srv-workspace-path" placeholder="Workspace folder path…" />
+          </div>
+          <button id="btn-srv-write-config">Write .continue/config.json</button>
+          <div id="srv-config-status" class="srv-config-status"></div>
+
+          <hr class="srv-sep" />
+          <div class="srv-section-label">Listening Server <span style="font-size:10px;opacity:0.6;font-weight:normal;">port 8083 &mdash; musicnn / AcousticBrainz</span></div>
+          <div class="srv-row" style="gap:4px;">
+            <input type="text" id="srv-listening-model" readonly placeholder="musicnn weights or AcousticBrainz TF dir…"
+              style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;min-width:0;" />
+            <button id="btn-srv-browse-listening" style="font-size:11px;padding:3px 7px;white-space:nowrap;">Model…</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+            <button id="btn-listening-start" style="font-size:11px;padding:3px 10px;">Start Listening</button>
+            <button id="btn-listening-stop" style="font-size:11px;padding:3px 10px;">Stop</button>
+            <span id="srv-listening-beacon" class="server-beacon beacon-stopped" style="margin-left:2px;"></span>
+            <span id="srv-listening-status" style="font-size:11px;color:var(--text-dim);"></span>
+          </div>
+          <hr class="srv-sep" />
+          <div class="srv-section-label">Vision Server <span style="font-size:10px;opacity:0.6;font-weight:normal;">port 8082</span></div>
+          <div class="srv-row" style="gap:4px;">
+            <input type="text" id="srv-vision-model" readonly placeholder="Vision model .gguf…"
+              style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;min-width:0;" />
+            <button id="btn-srv-browse-vision" style="font-size:11px;padding:3px 7px;white-space:nowrap;">Model…</button>
+          </div>
+          <div class="srv-row" style="gap:4px;margin-top:4px;">
+            <input type="text" id="srv-mmproj" readonly placeholder="mmproj .gguf…"
+              style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;min-width:0;" />
+            <button id="btn-srv-browse-mmproj" style="font-size:11px;padding:3px 7px;white-space:nowrap;">mmproj…</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+            <button id="btn-vision-start" style="font-size:11px;padding:3px 10px;">Start Vision</button>
+            <button id="btn-vision-stop" style="font-size:11px;padding:3px 10px;">Stop</button>
+            <span id="srv-vision-beacon" class="server-beacon beacon-stopped" style="margin-left:2px;"></span>
+            <span id="srv-vision-status" style="font-size:11px;color:var(--text-dim);"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings tray pop-out panel -->
+      <div id="settings-tray" class="settings-tray" style="display:none">
+        <div class="settings-tray-header">
+          <span>&#x2699; Settings</span>
+          <button id="btn-settings-close">&times;</button>
+        </div>
+        <div class="settings-tray-content">
+          <div class="stg-section-label">Generation</div>
+          <div class="stg-row">
+            <label for="stg-throttle">Throttle</label>
+            <span id="stg-throttle-val" class="stg-value">100%</span>
+          </div>
+          <input type="range" id="stg-throttle" min="25" max="100" step="5" value="100" class="stg-slider" />
+          <hr class="stg-sep" />
+          <div class="stg-section-label">Default System Prompt</div>
+          <textarea id="stg-sys-prompt" class="stg-textarea" rows="6" placeholder="Applied when no prompt is set…"></textarea>
+          <hr class="stg-sep" />
+          <div class="stg-section-label">Context Window</div>
+          <div class="stg-row">
+            <label for="stg-max-ctx">Max Context</label>
+            <select id="stg-max-ctx" class="stg-value">
+              <option value="0">Auto</option>
+              <option value="32768">32k</option>
+              <option value="65536">64k</option>
+              <option value="131072">128k</option>
+              <option value="262144">256k</option>
+            </select>
+          </div>
+          <div id="stg-max-ctx-warn" style="font-size:12px;color:var(--text-dim);min-height:18px;margin-top:6px;">Auto chooses the best context based on model & hardware.</div>
+          <button id="btn-stg-save" class="stg-save-btn">Save Settings</button>
+          <div id="stg-status" class="stg-status"></div>
+        </div>
+      </div>
+
+      <div id="messages" class="messages"></div>
+
+      <div id="input-bar" class="input-bar">
+        <textarea id="chat-input" rows="3" placeholder="Type a message…"></textarea>
+        <div class="input-buttons">
+          <button id="btn-send">Send</button>
+          <button id="btn-stop" disabled>Stop</button>
+        </div>
+        <div class="voice-btn-stack">
+          <button id="btn-mic" class="mic-btn" title="Voice input (requires Whisper)">&#x1F3A4;</button>
+          <button id="btn-tts" class="tts-btn" title="Text to Speech (requires Voicebox)">&#x1F50A;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: 11 expansion slot tabs -->
+    <div id="exp-tab-strip" class="exp-tab-strip">
+      <button class="exp-tab" data-slot="1" title="Context Echo">
+        <span class="exp-tab-icon">&#x1F4E1;</span>
+      </button>
+      <button class="exp-tab" data-slot="2" title="Model Info">
+        <span class="exp-tab-icon">&#x1F4CA;</span>
+      </button>
+      <button class="exp-tab" data-slot="3" title="Debug Terminal">
+        <span class="exp-tab-icon">&#x1F4BB;</span>
+      </button>
+      <button class="exp-tab" data-slot="4" title="HF Model Fetcher">
+        <span class="exp-tab-icon">&#x2B07;</span>
+      </button>
+      <button class="exp-tab" data-slot="5" title="Hardware">
+        <span class="exp-tab-icon">&#x1F527;</span>
+      </button>
+      <button class="exp-tab" data-slot="6" title="Expansion Slot 6">
+        <span class="exp-tab-icon">&#x2795;</span>
+      </button>
+      <button class="exp-tab" data-slot="7" title="Expansion Slot 7">
+        <span class="exp-tab-icon">&#x2795;</span>
+      </button>
+      <button class="exp-tab" data-slot="8" title="Listening — Audio Intelligence">
+        <span class="exp-tab-icon">&#x1F442;))</span>
+      </button>
+      <button class="exp-tab" data-slot="9" title="Model Card">
+        <span class="exp-tab-icon">&#x1F4C7;</span>
+      </button>
+      <button class="exp-tab" data-slot="10" title="Expansion Slot 10">
+        <span class="exp-tab-icon">&#x2795;</span>
+      </button>
+      <button class="exp-tab" data-slot="11" title="Expansion Slot 11">
+        <span class="exp-tab-icon">&#x2795;</span>
+      </button>
+    </div>
+
+    <!-- Expansion trays (one per slot) -->
+    <div class="exp-tray" id="exp-tray-1" style="display:none">
+      <div class="exp-tray-header">
+        <span>Context Echo</span>
+        <button class="exp-tray-close" data-slot="1">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-1-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-2" style="display:none">
+      <div class="exp-tray-header">
+        <span>Model Info</span>
+        <button class="exp-tray-close" data-slot="2">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-2-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-3" style="display:none">
+      <div class="exp-tray-header">
+        <span>Debug Terminal</span>
+        <button class="exp-tray-close" data-slot="3">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-3-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-4" style="display:none">
+      <div class="exp-tray-header">
+        <span>HF Model Fetcher</span>
+        <button class="exp-tray-close" data-slot="4">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-4-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-5" style="display:none">
+      <div class="exp-tray-header">
+        <span>Hardware</span>
+        <button class="exp-tray-close" data-slot="5">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-5-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-6" style="display:none">
+      <div class="exp-tray-header">
+        <span>Expansion Slot 6 &mdash; available</span>
+        <button class="exp-tray-close" data-slot="6">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-6-content">
+        <p class="slot-placeholder">Expansion Slot 6 — available</p>
+      </div>
+    </div>
+    <div class="exp-tray" id="exp-tray-7" style="display:none">
+      <div class="exp-tray-header">
+        <span>Expansion Slot 7 &mdash; available</span>
+        <button class="exp-tray-close" data-slot="7">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-7-content">
+        <p class="slot-placeholder">Expansion Slot 7 — available</p>
+      </div>
+    </div>
+    <div class="exp-tray" id="exp-tray-8" style="display:none">
+      <div class="exp-tray-header">
+        <span>&#x1F442;)) Listening</span>
+        <button class="exp-tray-close" data-slot="8">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-8-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-9" style="display:none">
+      <div class="exp-tray-header">
+        <span>&#x1F4C7; Model Card</span>
+        <button class="exp-tray-close" data-slot="9">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-9-content"></div>
+    </div>
+    <div class="exp-tray" id="exp-tray-10" style="display:none">
+      <div class="exp-tray-header">
+        <span>Expansion Slot 10 &mdash; available</span>
+        <button class="exp-tray-close" data-slot="10">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-10-content">
+        <p class="slot-placeholder">Expansion Slot 10 — available</p>
+      </div>
+    </div>
+    <div class="exp-tray" id="exp-tray-11" style="display:none">
+      <div class="exp-tray-header">
+        <span>Expansion Slot 11 &mdash; available</span>
+        <button class="exp-tray-close" data-slot="11">&times;</button>
+      </div>
+      <div class="exp-tray-content" id="exp-slot-11-content">
+        <p class="slot-placeholder">Expansion Slot 11 — available</p>
+      </div>
+    </div>
+
+  </div><!-- /#screen-chat -->
+
+  <script src="main.js"></script>
+</body>
+</html>
+

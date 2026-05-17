@@ -1,0 +1,228 @@
+GGUF Chatbox — Refined Module Architecture
+============================================
+Date: 2026-04-07
+Status: Planning → Adaptive Llama ported from AiSmartGuy (proven, running 80% CPU+GPU)
+
+OVERVIEW
+--------
+Desktop chatbox powered by local GGUF models via llama.cpp.  Five modules,
+each a standalone Rust crate (or crate group).  The adaptive llama module
+is the foundation — everything else depends on it.
+
+
+MODULE DEPENDENCY GRAPH
+-----------------------
+
+  ┌──────────────────────┐
+  │   Chat Interface     │  (Tauri v2 frontend — HTML/CSS/JS)
+  │   + CWL4 sidebar     │
+  └──────┬───────────────┘
+         │ Tauri commands
+         ▼
+  ┌──────────────────────┐     ┌──────────────────┐
+  │   Server Module      │────▶│   Tool Belt      │
+  │   (llama-server mgr, │     │   (RAG, file ops, │
+  │    tool-call proxy,  │     │    web search,    │
+  │    MCP server)       │     │    code exec)     │
+  └──────┬───────────────┘     └──────────────────┘
+         │ model config
+         ▼
+  ┌──────────────────────┐     ┌──────────────────┐
+  │  Adaptive Llama      │     │  Context Echo     │
+  │  (GGUF reader, GPU   │     │  (token-milestone │
+  │   calc, binary mgmt, │     │   memory echoes)  │
+  │   inference engine)  │     │                   │
+  └──────────────────────┘     └──────────────────┘
+         │
+         ▼
+  ┌──────────────────────┐
+  │  Foundation crates   │
+  │  (utils, logging,    │
+  │   error_system)      │
+  └──────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════
+MODULE 1: ADAPTIVE LLAMA  (ported from AiSmartGuy — PROVEN CODE)
+═══════════════════════════════════════════════════════════════════
+
+Source: AiSmartGuy/crates/model_loader  →  gguf chatbox/crates/adaptive_llama
+Status: CLONED — all 12 source files + 3 foundation crates
+
+What it does (unchanged from AiSmartGuy):
+  • GGUF binary metadata reader (context_length, block_count, architecture)
+  • Auto GPU layer calculator (VRAM budget → optimal n_gpu_layers)
+  • VRAM-aware max context calculator
+  • llama binary detection (local install + PATH scan)
+  • State machine: Unloaded → Loading → Loaded → Inferencing → Loaded
+  • Subprocess spawning with hidden console, piped stderr, null stdin
+  • Timeout enforcement: dynamic inference timeout + stall detection
+  • Inference failure diagnostics (OOM, crash, timeout analysis)
+  • Log callback system for real-time stderr streaming
+
+What changes for chatbox (Phase 2 — NOT done yet):
+  • command_builder.rs:
+    - REMOVE `-no-cnv` flag (we WANT conversation mode for chat)
+    - Add `--interactive` or `--conversation` mode as default
+    - Add `-cnv` flag explicitly for clarity
+    - Support both one-shot (tool calls) and chat (conversation) modes
+    - Add `--chat-template` override flag for custom system prompts
+  • llama_detect.rs:
+    - Change install dir from `~/.aismartguy/` to `~/.gguf-chatbox/`
+    - Support detecting both llama-completion (one-shot) AND llama-server (persistent)
+  • inferencer.rs:
+    - Add streaming mode: yield tokens as they arrive (for chat UI)
+    - Support persistent subprocess (keep model loaded between messages)
+  • NEW file: server_bridge.rs
+    - Manage llama-server subprocess lifecycle (start/stop/health)
+    - Reuse auto_gpu_layers, VRAM budget, GGUF reader from same crate
+  • types.rs:
+    - Add InferenceMode enum: OneShot | Chat | Server
+
+Foundation crates (also cloned):
+  • utils     — file I/O, hashing, JSON, time, path helpers
+  • logging   — structured log entries, file writer, metrics, macros
+  • error_system — error classification, recovery actions, GPU fallback
+
+
+═══════════════════════════════════════════════════════════════════
+MODULE 2: CHAT INTERFACE  (Tauri v2 frontend)
+═══════════════════════════════════════════════════════════════════
+
+Source: new (design docs in chat interface module/)
+
+Components:
+  • Main chat window — message bubbles, streaming token display
+  • CWL4 sidebar (left margin):
+    - Recalibration Message panel (persistent behavioral prompt, 5 cadence options)
+    - Gated Spillway 1/2/3 (sequenced workflow pipeline with trigger words)
+  • Model selector — dropdown populated from local model library
+  • Settings panel — throttle slider, context size, temperature
+
+Tech: HTML + CSS + JS inside Tauri v2 webview
+Rust backend: Tauri commands calling adaptive_llama crate
+
+Key design:
+  • Streaming: tokens arrive via Tauri events, appended to active bubble
+  • CWL4 fires are injected as system/user messages before the next inference
+  • Recalibration fires count as system prompt prepend (not visible in chat)
+  • Spillway fires are visible as "staged" messages with a gated icon
+
+
+═══════════════════════════════════════════════════════════════════
+MODULE 3: CONTEXT ECHO  (automatic memory reinforcement)
+═══════════════════════════════════════════════════════════════════
+
+Source: plan in context echo module/
+
+Pure logic crate, no dependencies on GPU/filesystem.
+
+Key functions:
+  • capture_echo_source(system_prompt, early_messages) → EchoSource
+  • check_milestone(current_tokens, ctx_size, config) → Option<MilestoneHit>
+  • inject_echo(prompt, echo_source, milestone) → String
+  • auto_scale_echo(echo_source, ctx_size) → String
+
+Token estimation: chars / 2 (same heuristic)
+Default milestones: 25%, 50%, 75% of context window
+Echo budget: capped at 1% of total ctx per reminder
+
+Hooks into chat engine between history assembly and inference call.
+
+
+═══════════════════════════════════════════════════════════════════
+MODULE 4: SERVER MODULE  (llama-server + tool proxy + MCP)
+═══════════════════════════════════════════════════════════════════
+
+Source: plan in server module/server module.txt (detailed, unchanged)
+
+Three components:
+  1. llama-server manager — persistent process, model stays in VRAM
+  2. Tool-calling proxy — intercepts tool_calls, routes to tool belt, re-queries
+  3. MCP server — exposes tools via Model Context Protocol
+
+GUI: pop-out tray (top-right) with:
+  • Status beacon (green/amber/grey/red)
+  • Endpoint display + copy button
+  • Model info (name, context, GPU layers, threads)
+  • Start/Stop toggle
+  • Auto-config to .continue/config.json on server start
+
+Depends on: adaptive_llama (GPU calc, GGUF reader), tool_belt
+
+
+═══════════════════════════════════════════════════════════════════
+MODULE 5: TOOL BELT  (RAG + extensible tool system)
+═══════════════════════════════════════════════════════════════════
+
+Source: plan in tool belt/
+
+Each tool type = its own crate under crates/tools/
+
+Planned tools:
+  • RAG retrieval (priority — reuse AiSmartGuy packet system as starting point)
+  • File operations (read/write/list local files)
+  • Web search (via SearXNG or similar local search)
+  • Code execution (sandboxed Python/JS snippets)
+  • System info (hardware stats, model info)
+
+Tool interface:
+  • Each tool implements a ToolHandler trait
+  • Tool registry maps function names → handlers
+  • Server module's proxy calls registry.dispatch(tool_name, args) → result
+
+
+═══════════════════════════════════════════════════════════════════
+CRATE LAYOUT (target structure)
+═══════════════════════════════════════════════════════════════════
+
+gguf-chatbox/
+├── Cargo.toml                    (workspace)
+├── crates/
+│   ├── adaptive_llama/           ← CLONED from AiSmartGuy model_loader
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── command_builder.rs
+│   │       ├── llama_detect.rs
+│   │       ├── inferencer.rs
+│   │       ├── loader.rs
+│   │       ├── gpu_mapper.rs
+│   │       ├── state_machine.rs
+│   │       ├── types.rs
+│   │       ├── process.rs
+│   │       ├── timeout.rs
+│   │       ├── errors.rs
+│   │       └── log_callback.rs
+│   ├── utils/                    ← CLONED from AiSmartGuy
+│   ├── logging/                  ← CLONED from AiSmartGuy
+│   ├── error_system/             ← CLONED from AiSmartGuy
+│   ├── context_echo/             (new — Module 3)
+│   ├── server/                   (new — Module 4)
+│   └── tools/                    (new — Module 5)
+│       ├── rag/
+│       ├── file_ops/
+│       └── ...
+├── src-tauri/                    (Tauri v2 app shell)
+│   ├── Cargo.toml
+│   └── src/main.rs
+└── frontend/                     (Module 2 — chat UI + CWL4)
+    ├── index.html
+    ├── main.css
+    └── main.js
+
+
+═══════════════════════════════════════════════════════════════════
+BUILD ORDER / PHASES
+═══════════════════════════════════════════════════════════════════
+
+Phase 1 (NOW):  Clone adaptive_llama + foundation crates, verify cargo check
+Phase 2:        Adapt command_builder for chat mode, change install dirs
+Phase 3:        Build chat interface (Tauri shell + basic chat UI)
+Phase 4:        Wire adaptive_llama → chat interface (send message → get response)
+Phase 5:        Add context echo (inject at milestones)
+Phase 6:        Add CWL4 sidebar to chat interface
+Phase 7:        Build server module (llama-server manager)
+Phase 8:        Build tool belt (RAG first, then file ops)
+Phase 9:        Wire tool-calling proxy + MCP
+Phase 10:       Polish, settings, model library management

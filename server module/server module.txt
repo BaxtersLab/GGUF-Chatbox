@@ -1,0 +1,164 @@
+SERVER MODULE — Local Inference Server + IDE Integration
+========================================================
+
+PURPOSE
+-------
+Run llama-server as a persistent local backend so any OpenAI-compatible client
+(Continue in VSCodium, Open WebUI, custom scripts) can hit a single endpoint
+for chat completions with tool calling.  The chatbox GUI gets a pop-out tray
+panel with a server toggle, status beacon, and connection details.
+
+
+CORE COMPONENTS
+---------------
+
+1. llama-server Manager
+   - Launches llama-server (instead of llama-cli) with the active model.
+   - Flags: --host 127.0.0.1 --port <configurable> --ctx-size <auto>
+            --n-gpu-layers <auto> --threads <throttle-scaled>
+   - Keeps the model loaded in VRAM between requests (no cold start per message).
+   - Graceful shutdown on app close or model swap.
+   - Reuses adaptive llama module logic for: auto GPU layers, VRAM budget,
+     throttle scaling, GGUF metadata reads.
+
+2. Tool-Calling Proxy (thin middleware)
+   - Sits between the client and llama-server.
+   - Intercepts tool_calls in the model response.
+   - Routes each call to the matching tool belt crate (RAG, file ops, etc.).
+   - Injects tool results back as tool-role messages, re-queries the model.
+   - Passes straight through when no tool calls are present.
+   - OpenAI /v1/chat/completions compatible — no client-side changes needed.
+
+3. MCP Server (optional secondary interface)
+   - Exposes tool belt tools via Model Context Protocol.
+   - Continue can discover and invoke tools directly through MCP.
+   - Runs alongside the OpenAI endpoint on a separate port.
+
+
+GUI — POP-OUT SERVER TRAY
+--------------------------
+
+Location: top-right corner of chatbox, small server icon.
+Click to expand a tray panel:
+
+  ┌─────────────────────────────────┐
+  │  SERVER                  [X]    │
+  │                                 │
+  │  ● Active    (green beacon)     │
+  │  ○ Inactive  (grey beacon)      │
+  │  ◉ Starting  (amber pulse)     │
+  │                                 │
+  │  Endpoint:                      │
+  │  http://127.0.0.1:8080/v1      │
+  │  [Copy]                         │
+  │                                 │
+  │  Model: Qwen3.5-9B-Q8_0        │
+  │  Context: 16384                 │
+  │  GPU Layers: 32/32              │
+  │  Threads: 9                     │
+  │                                 │
+  │  [ Start Server ] / [ Stop ]    │
+  │                                 │
+  │  ─── Continue Quick Setup ───   │
+  │  Paste into .continue/config:   │
+  │  {                              │
+  │    "models": [{                 │
+  │      "provider": "openai",      │
+  │      "apiBase": "http://127...  │
+  │      "model": "local",          │
+  │      "apiKey": "none"           │
+  │    }]                           │
+  │  }                              │
+  │  [Copy Config]                  │
+  └─────────────────────────────────┘
+
+Beacon states:
+  - Green solid    = server listening, model loaded, ready
+  - Amber pulse    = server starting / model loading into VRAM
+  - Grey solid     = server stopped
+  - Red pulse      = server crashed / port conflict
+
+
+STATUS BEACON PROTOCOL
+----------------------
+The GUI polls GET /health every 2s when the server is supposed to be active.
+  200 + {"status":"ok"}       → green
+  200 + {"status":"loading"}  → amber
+  No response / error         → red (if was started) or grey (if stopped)
+
+
+CONTINUE / VSCODIUM INTEGRATION
+--------------------------------
+- llama-server speaks native OpenAI /v1/chat/completions.
+- Tool calling flows through the proxy automatically — Continue sends the
+  request, proxy handles tool loop, Continue gets the final answer.
+- MCP path: Continue can also consume tools directly via MCP if the user
+  enables the MCP server in the tray.
+
+Auto-Config via Agentic Constitution:
+  When the server starts, the server module writes/updates the active
+  VSCodium workspace's agentic constitution file directly.  No manual
+  copy-paste needed.  Flow:
+
+  1. User sets a "Workspace Path" in the server tray (or it auto-detects
+     the last opened VSCodium workspace).
+  2. On server start, the module writes the provider block into:
+       <workspace>/.continue/config.json
+     If the file exists, it merges into the "models" array (upsert by
+     provider+apiBase).  If it doesn't exist, it creates a minimal config.
+  3. On server stop, optionally marks the model entry as unavailable
+     (or leaves it — Continue just gets connection refused, no harm).
+  4. The agentic constitution / .instructions.md in that workspace can
+     reference the local model by name for agent routing rules.
+
+  The tray still shows [Copy Config] as a fallback, but the primary path
+  is fully automatic — start server, open VSCodium, Continue sees the
+  local model immediately.
+
+  Config written:
+  {
+    "models": [{
+      "title": "Local – Qwen3.5-9B",
+      "provider": "openai",
+      "apiBase": "http://127.0.0.1:8080/v1",
+      "model": "qwen3.5-9b-q8_0",
+      "apiKey": "none"
+    }]
+  }
+
+  The "title" and "model" fields are derived from the loaded GGUF filename
+  so they update automatically when you swap models.
+
+
+ARCHITECTURE FLOW
+-----------------
+
+  Continue / any client
+        │
+        ▼
+  Tool-Calling Proxy  (localhost:8080)
+        │
+        ├──► Tool Belt crates  (when model requests tools)
+        │       │
+        │       ◄── tool results
+        │
+        ▼
+  llama-server  (localhost:8081, internal)
+        │
+        ▼
+  GGUF model in VRAM
+
+
+DEPENDENCIES
+------------
+- adaptive llama module  (model management, GPU calc, GGUF reader)
+- tool belt module       (RAG + future tools)
+- chat interface module  (GUI tray integration)
+
+
+OPEN QUESTIONS
+--------------
+- Port selection: fixed default (8080) or auto-find open port?
+- Auth: localhost-only is safe, but add optional API key for LAN access?
+- Concurrent requests: queue or reject while one is in-flight?
+- Model hot-swap: stop server → swap model → restart, or live reload?

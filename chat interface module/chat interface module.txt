@@ -1,0 +1,4 @@
+this is the chat gui that gives a voice to the adaptive llama backend. 
+eventually there will be buttons with pop out trays (old winamp style) the trays can contain
+lots of tool goodies or link to dependency apps for tool calls. the chat window has a margin where
+CWL4 can be implimented (see plan also in this folder)

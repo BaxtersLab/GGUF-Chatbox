@@ -1,0 +1,128 @@
+CWL4 becomes a clean, modular control surface that sits to the left of any chat window and gives you four parallel layers of governance: one persistent behavioral layer and three sequenced workflow layers. The feature is compact in UI but extremely powerful in how it shapes agent behavior, timing, and reliability.
+
+CWL4 overview
+CWL4 is a vertical stack of four buttons on the left side of the chat window. Each button opens a drop‑down panel that looks like a miniature chat window but serves a distinct control function. Together, these four panels let you define how the agent stays aligned, how future messages are staged, and how multi‑step workflows unfold.
+
+The four buttons are:
+
+Recalibration Message
+
+Gated Spillway 1
+
+Gated Spillway 2
+
+Gated Spillway 3
+
+Each panel is independent, visible, and editable at any time.
+
+Recalibration Message panel
+This panel holds a persistent “shell prompt” that reinforces the agent’s behavior, formatting expectations, and guardrails. It can fire on a schedule or in sync with spillway events.
+
+Key elements
+A text box for the persistent recalibration prompt.
+
+Four cadence buttons:
+
+Every message
+
+Every other message
+
+Every 3rd message
+
+Every 5th message
+
+A toggle that allows the recalibration message to fire automatically whenever Spillway 1, 2, or 3 fires.
+
+Purpose
+Keeps the agent aligned during long sessions.
+
+Reasserts formatting and workflow expectations.
+
+Prevents drift between spillway‑driven steps.
+
+Acts as a built‑in version of your “recalibrate bro.txt” file.
+
+Gated Spillway 1
+This is the first stage in a three‑stage workflow pipeline. It holds a message that will be sent into the main chat under specific conditions.
+
+Controls
+Send as next message — fires the spillway message before the next user message.
+
+Use trigger word: [____] — fires the spillway message when the agent uses the specified word or phrase.
+
+Purpose
+Pre‑stage the next instruction.
+
+Trigger the next step when the agent signals readiness.
+
+Begin a multi‑step workflow.
+
+Gated Spillway 2
+This is the second stage in the pipeline. It fires only after Spillway 1 has fired.
+
+Controls
+Send as second message — fires after Spillway 1’s message.
+
+Use trigger word: [____] — fires when the agent uses the specified word or phrase.
+
+Purpose
+Maintain strict sequencing.
+
+Allow conditional or event‑driven progression.
+
+Support multi‑step workflows without manual timing.
+
+Gated Spillway 3
+This is the third stage in the pipeline. It fires only after Spillway 2 has fired.
+
+Controls
+Send as third message — fires after Spillway 2’s message.
+
+Use trigger word: [____] — fires when the agent uses the specified word or phrase.
+
+Purpose
+Complete a three‑step workflow.
+
+Allow complex sequences to run hands‑free.
+
+Provide deterministic end‑stage behavior.
+
+How the four panels work together
+CWL4 creates a layered control system:
+
+Recalibration panel provides persistent behavioral reinforcement.
+
+Spillway 1 initiates the workflow.
+
+Spillway 2 continues the workflow in order.
+
+Spillway 3 completes the workflow.
+
+Each spillway can fire based on:
+
+Ordinal position (next, second, third)
+
+Trigger words
+
+Or both
+
+The recalibration message can fire:
+
+On a schedule
+
+Or synchronously with any spillway event
+
+This gives you a predictable, event‑driven, multi‑stage orchestration system embedded directly into the chat UI.
+
+What CWL4 enables
+Multi‑step agent workflows without manual timing.
+
+Event‑driven prompt injection based on agent output.
+
+Persistent behavioral alignment across long sessions.
+
+Deterministic sequencing of complex instructions.
+
+Hands‑free execution of multi‑module tasks.
+
+A clear, visible, editable control surface for prompt governance.

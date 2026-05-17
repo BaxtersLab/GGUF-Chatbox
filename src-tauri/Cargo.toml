@@ -1,0 +1,24 @@
+[package]
+name = "gguf-chatbox-app"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+adaptive_llama = { path = "../crates/adaptive_llama" }
+context_echo = { path = "../crates/context_echo" }
+server = { path = "../crates/server" }
+tool_belt = { path = "../crates/tool_belt" }
+utils = { path = "../crates/utils" }
+logging = { path = "../crates/logging" }
+error_system = { path = "../crates/error_system" }
+ureq = "2"
+rfd = "0.14"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+base64 = "0.21"

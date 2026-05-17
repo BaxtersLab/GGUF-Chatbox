@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Advanced Settings — GGUF Chatbox</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #1e1e1e;
+      --surface: #252526;
+      --border: #3c3c3c;
+      --accent: #0e639c;
+      --accent-hover: #1177bb;
+      --text: #d4d4d4;
+      --text-dim: #858585;
+      --input-bg: #3c3c3c;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 14px;
+      overflow-y: auto;
+    }
+
+    .adv-container {
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 24px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .adv-title {
+      font-size: 18px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+
+    .adv-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .adv-section-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+
+    .adv-sep { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+
+    .adv-row { display: flex; align-items: center; gap: 10px; }
+
+    .adv-row label { font-size: 13px; flex: 1; }
+    .adv-row .adv-value { font-size: 13px; color: var(--text-dim); min-width: 40px; text-align: right; }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      background: var(--input-bg);
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    textarea {
+      width: 100%;
+      background: var(--input-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      resize: vertical;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 7px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+    button:hover:not(:disabled) { background: var(--accent-hover); }
+    button:disabled { opacity: 0.4; cursor: default; }
+
+    /* HRT link module */
+    .hrt-link-btn {
+      background: #3a3a3a;
+      color: #fff;
+      font-weight: 600;
+      align-self: flex-start;
+    }
+    .hrt-link-btn:hover:not(:disabled) { background: #555; }
+    .hrt-link-btn:disabled { background: #999; cursor: not-allowed; }
+
+    .hrt-status {
+      font-size: 0.85rem;
+      font-weight: 600;
+      min-height: 1.2em;
+    }
+    .hrt-status.hrt-ok  { color: #27ae60; }
+    .hrt-status.hrt-err { color: #c0392b; }
+    .hrt-status.hrt-busy { color: #888; }
+
+    .adv-save-btn { align-self: flex-end; }
+
+    .adv-status {
+      font-size: 12px;
+      color: var(--text-dim);
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="adv-container">
+    <div class="adv-title">Advanced Settings</div>
+
+    <!-- Generation -->
+    <div class="adv-section">
+      <div class="adv-section-label">Generation</div>
+      <div class="adv-row">
+        <label for="adv-throttle">Throttle</label>
+        <span class="adv-value" id="adv-throttle-val">100%</span>
+      </div>
+      <input type="range" id="adv-throttle" min="25" max="100" step="5" value="100" />
+    </div>
+
+
+    <hr class="adv-sep" />
+
+    <!-- Filter Message Tags -->
+    <div class="adv-section">
+      <div class="adv-section-label">Chat Output</div>
+      <div class="adv-row">
+        <label for="adv-filter-msg-tags">Filter message tags</label>
+        <input type="checkbox" id="adv-filter-msg-tags" />
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">Hide 'eof by user' and 'interrupted by user' tags from chat output.</div>
+    </div>
+
+    <hr class="adv-sep" />
+
+    <!-- Default System Prompt -->
+    <div class="adv-section">
+      <div class="adv-section-label">Default System Prompt</div>
+      <textarea id="adv-sys-prompt" rows="5" placeholder="Applied when no prompt is set…"></textarea>
+    </div>
+
+    <hr class="adv-sep" />
+
+    <!-- Hot Rod Tuner -->
+    <div class="adv-section">
+      <div class="adv-section-label">Hot Rod Tuner</div>
+      <button class="hrt-link-btn" id="hrtLinkBtn">Link to Hot Rod Tuner</button>
+      <p class="hrt-status" id="hrtStatus"></p>
+    </div>
+
+    <hr class="adv-sep" />
+
+    <!-- Voice (Voicebox TTS) -->
+    <div class="adv-section">
+      <div class="adv-section-label">Voice (Voicebox TTS)</div>
+      <div class="adv-row">
+        <label>Status</label>
+        <span class="adv-value" id="adv-voice-status" style="font-size:12px;">Checking…</span>
+      </div>
+      <div style="margin-top:4px;">
+        <label style="font-size:12px;color:var(--text-dim);">Voicebox URL</label>
+        <input type="text" id="adv-voicebox-url" value="http://localhost:17493"
+          style="width:100%;margin-top:4px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;box-sizing:border-box;" />
+      </div>
+      <div style="margin-top:4px;">
+        <label style="font-size:12px;color:var(--text-dim);">Voice Profile</label>
+        <select id="adv-voice-profile"
+          style="width:100%;margin-top:4px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;box-sizing:border-box;">
+          <option value="">Select a profile…</option>
+        </select>
+      </div>
+      <button id="btn-refresh-voices" style="align-self:flex-start;font-size:12px;padding:4px 10px;margin-top:4px;">Refresh Profiles</button>
+      <hr class="adv-sep" />
+      <div style="margin-top:4px;">
+        <label style="font-size:12px;color:var(--text-dim);">Voicebox Exe Path</label>
+        <div style="display:flex;gap:6px;margin-top:4px;">
+          <input type="text" id="adv-voicebox-exe" readonly placeholder="Browse to Voicebox.exe…"
+            style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;box-sizing:border-box;" />
+          <button id="btn-browse-vb-exe" style="font-size:12px;padding:4px 10px;white-space:nowrap;">Browse</button>
+        </div>
+      </div>
+      <button id="btn-open-voicebox" style="align-self:flex-start;font-size:12px;padding:6px 14px;margin-top:4px;background:#6d28d9;font-weight:600;">&#x1F50A; Open Voicebox</button>
+      <div id="adv-vb-status" style="font-size:12px;color:var(--text-dim);min-height:16px;"></div>
+    </div>
+
+    <hr class="adv-sep" />
+
+    <!-- Speech-to-Text (Whisper) -->
+    <div class="adv-section">
+      <div class="adv-section-label">Speech-to-Text (Whisper)</div>
+      <div style="margin-top:4px;">
+        <label style="font-size:12px;color:var(--text-dim);">whisper-cli Exe Path</label>
+        <div style="display:flex;gap:6px;margin-top:4px;">
+          <input type="text" id="adv-whisper-exe" readonly placeholder="Browse to whisper-cli.exe…"
+            style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;box-sizing:border-box;" />
+          <button id="btn-browse-whisper-exe" style="font-size:12px;padding:4px 10px;white-space:nowrap;">Browse</button>
+        </div>
+      </div>
+      <div style="margin-top:4px;">
+        <label style="font-size:12px;color:var(--text-dim);">Whisper Model (.bin)</label>
+        <div style="display:flex;gap:6px;margin-top:4px;">
+          <input type="text" id="adv-whisper-model" readonly placeholder="Browse to ggml-base.en.bin…"
+            style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;box-sizing:border-box;" />
+          <button id="btn-browse-whisper-model" style="font-size:12px;padding:4px 10px;white-space:nowrap;">Browse</button>
+        </div>
+      </div>
+      <hr class="adv-sep" />
+      <div style="margin-top:4px;">
+        <label style="font-size:12px;color:var(--text-dim);">Silence timeout (auto-stop recording)</label>
+        <div class="adv-row" style="margin-top:4px;">
+          <input type="range" id="adv-silence-timeout" min="1" max="15" step="1" value="5" style="flex:1;" />
+          <span class="adv-value" id="adv-silence-timeout-val" style="min-width:30px;">5s</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Mic stops after this many seconds of silence</div>
+      </div>
+      <div id="adv-whisper-status" style="font-size:12px;color:var(--text-dim);min-height:16px;"></div>
+    </div>
+
+    <hr class="adv-sep" />
+
+    <button class="adv-save-btn" id="btn-adv-save">Save Settings</button>
+    <div class="adv-status" id="adv-status"></div>
+  </div>
+
+  <script>
+    async function invoke(cmd, args) {
+      return window.__TAURI__.core.invoke(cmd, args || {});
+    }
+
+    var throttleEl  = document.getElementById('adv-throttle');
+    var throttleVal = document.getElementById('adv-throttle-val');
+    var sysPrompt   = document.getElementById('adv-sys-prompt');
+    var hrtLinkBtn  = document.getElementById('hrtLinkBtn');
+    var hrtStatus   = document.getElementById('hrtStatus');
+    var saveBtn     = document.getElementById('btn-adv-save');
+    var statusEl    = document.getElementById('adv-status');
+    var hrtLinked   = false;
+
+
+    throttleEl.addEventListener('input', function () {
+      throttleVal.textContent = throttleEl.value + '%';
+    });
+
+    // Filter message tags toggle
+    var filterMsgTagsEl = document.getElementById('adv-filter-msg-tags');
+    // Load setting
+    invoke('cmd_get_settings').then(function (s) {
+      filterMsgTagsEl.checked = !!s.filter_msg_tags;
+    });
+    filterMsgTagsEl.addEventListener('change', function () {
+      invoke('cmd_update_settings', { filterMsgTags: filterMsgTagsEl.checked }).catch(function () {});
+    });
+
+    // Load current settings on open
+    async function loadSettings() {
+      try {
+        var s = await invoke('cmd_get_settings');
+        throttleEl.value = s.throttle_pct;
+        throttleVal.textContent = s.throttle_pct + '%';
+        sysPrompt.value = s.default_system_prompt;
+      } catch (_) {}
+    }
+    loadSettings();
+
+    // Save
+    saveBtn.addEventListener('click', async function () {
+      saveBtn.disabled = true;
+      try {
+        await invoke('cmd_update_settings', {
+          throttlePct: parseInt(throttleEl.value, 10),
+          defaultSystemPrompt: sysPrompt.value,
+        });
+        statusEl.textContent = 'Settings saved.';
+        setTimeout(function () { statusEl.textContent = ''; }, 2500);
+      } catch (e) {
+        statusEl.textContent = 'Error: ' + e;
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    // HRT link
+    hrtLinkBtn.addEventListener('click', function () {
+      if (hrtLinked) return;
+      hrtStatus.textContent = 'Linking\u2026';
+      hrtStatus.className = 'hrt-status hrt-busy';
+      hrtLinkBtn.disabled = true;
+      invoke('cmd_link_hrt', { port: 8090 })
+        .then(function () {
+          hrtStatus.textContent = 'HRT Link Successful \u2713';
+          hrtStatus.className = 'hrt-status hrt-ok';
+          hrtLinked = true;
+        })
+        .catch(function () {
+          hrtStatus.textContent = 'HRT not found \u2014 make sure Hot Rod Tuner is running';
+          hrtStatus.className = 'hrt-status hrt-err';
+          hrtLinkBtn.disabled = false;
+        });
+    });
+
+    // ── Voice (Voicebox TTS) ──────────────────────────────────────────────
+    var voiceStatusEl = document.getElementById('adv-voice-status');
+    var voiceboxUrlEl = document.getElementById('adv-voicebox-url');
+    var voiceProfileEl = document.getElementById('adv-voice-profile');
+    var btnRefreshVoices = document.getElementById('btn-refresh-voices');
+    var vbExeEl = document.getElementById('adv-voicebox-exe');
+    var btnBrowseVbExe = document.getElementById('btn-browse-vb-exe');
+    var btnOpenVoicebox = document.getElementById('btn-open-voicebox');
+    var vbStatusEl = document.getElementById('adv-vb-status');
+    var whisperExeEl = document.getElementById('adv-whisper-exe');
+    var whisperModelEl = document.getElementById('adv-whisper-model');
+    var btnBrowseWhisperExe = document.getElementById('btn-browse-whisper-exe');
+    var btnBrowseWhisperModel = document.getElementById('btn-browse-whisper-model');
+    var whisperStatusEl = document.getElementById('adv-whisper-status');
+    var silenceSlider = document.getElementById('adv-silence-timeout');
+    var silenceSliderVal = document.getElementById('adv-silence-timeout-val');
+
+    silenceSlider.addEventListener('input', function () {
+      silenceSliderVal.textContent = silenceSlider.value + 's';
+    });
+    silenceSlider.addEventListener('change', function () {
+      invoke('cmd_update_settings', { whisperSilenceTimeout: parseInt(silenceSlider.value, 10) }).catch(function () {});
+    });
+
+    // Load voice settings
+    invoke('cmd_get_settings').then(function (s) {
+      if (s.voicebox_url) voiceboxUrlEl.value = s.voicebox_url;
+      if (s.voice_profile_id) voiceProfileEl.value = s.voice_profile_id;
+      if (s.voicebox_exe_path) vbExeEl.value = s.voicebox_exe_path;
+      if (s.whisper_exe_path) whisperExeEl.value = s.whisper_exe_path;
+      if (s.whisper_model_path) whisperModelEl.value = s.whisper_model_path;
+      if (s.whisper_silence_timeout) {
+        silenceSlider.value = s.whisper_silence_timeout;
+        silenceSliderVal.textContent = s.whisper_silence_timeout + 's';
+      }
+      checkVoicebox(s.voicebox_url || voiceboxUrlEl.value);
+    }).catch(function () {});
+
+    function checkVoicebox(url) {
+      invoke('cmd_voicebox_status', { url: url }).then(function (ok) {
+        if (ok) {
+          voiceStatusEl.textContent = 'Connected';
+          voiceStatusEl.style.color = '#4ade80';
+          refreshProfiles(url);
+        } else {
+          voiceStatusEl.textContent = 'Not running';
+          voiceStatusEl.style.color = '#f87171';
+        }
+      }).catch(function () {
+        voiceStatusEl.textContent = 'Not running';
+        voiceStatusEl.style.color = '#f87171';
+      });
+    }
+
+    function refreshProfiles(url) {
+      invoke('cmd_voicebox_profiles', { url: url }).then(function (raw) {
+        try {
+          var profiles = JSON.parse(raw);
+          voiceProfileEl.innerHTML = '<option value="">Select a profile\u2026</option>';
+          if (Array.isArray(profiles)) {
+            profiles.forEach(function (p) {
+              var opt = document.createElement('option');
+              opt.value = p.id || p.name || '';
+              opt.textContent = p.name || p.id || 'Unknown';
+              voiceProfileEl.appendChild(opt);
+            });
+          }
+          // Restore saved selection
+          invoke('cmd_get_settings').then(function (s) {
+            if (s.voice_profile_id) voiceProfileEl.value = s.voice_profile_id;
+          }).catch(function () {});
+        } catch (_) {}
+      }).catch(function () {});
+    }
+
+    btnRefreshVoices.addEventListener('click', function () {
+      var url = voiceboxUrlEl.value.trim();
+      if (url) checkVoicebox(url);
+    });
+
+    // Save voice settings on change
+    voiceboxUrlEl.addEventListener('change', function () {
+      invoke('cmd_update_settings', { voiceboxUrl: voiceboxUrlEl.value.trim() }).catch(function () {});
+    });
+    voiceProfileEl.addEventListener('change', function () {
+      invoke('cmd_update_settings', { voiceProfileId: voiceProfileEl.value }).catch(function () {});
+    });
+
+    // Browse for Voicebox exe
+    btnBrowseVbExe.addEventListener('click', function () {
+      invoke('cmd_browse_voicebox_exe').then(function (path) {
+        vbExeEl.value = path;
+        invoke('cmd_update_settings', { voiceboxExePath: path }).catch(function () {});
+        vbStatusEl.textContent = 'Path saved.';
+        setTimeout(function () { vbStatusEl.textContent = ''; }, 2000);
+      }).catch(function (e) {
+        if (e !== 'cancelled') vbStatusEl.textContent = 'Error: ' + e;
+      });
+    });
+
+    // Launch Voicebox
+    btnOpenVoicebox.addEventListener('click', function () {
+      vbStatusEl.textContent = 'Launching…';
+      invoke('cmd_launch_voicebox').then(function () {
+        vbStatusEl.textContent = 'Voicebox launched.';
+        setTimeout(function () { vbStatusEl.textContent = ''; }, 3000);
+      }).catch(function (e) {
+        vbStatusEl.textContent = e;
+      });
+    });
+
+    // Browse for whisper-cli exe
+    btnBrowseWhisperExe.addEventListener('click', function () {
+      invoke('cmd_browse_whisper_exe').then(function (path) {
+        whisperExeEl.value = path;
+        invoke('cmd_update_settings', { whisperExePath: path }).catch(function () {});
+        whisperStatusEl.textContent = 'Exe path saved.';
+        setTimeout(function () { whisperStatusEl.textContent = ''; }, 2000);
+      }).catch(function (e) {
+        if (e !== 'cancelled') whisperStatusEl.textContent = 'Error: ' + e;
+      });
+    });
+
+    // Browse for whisper model
+    btnBrowseWhisperModel.addEventListener('click', function () {
+      invoke('cmd_browse_whisper_model').then(function (path) {
+        whisperModelEl.value = path;
+        invoke('cmd_update_settings', { whisperModelPath: path }).catch(function () {});
+        whisperStatusEl.textContent = 'Model path saved.';
+        setTimeout(function () { whisperStatusEl.textContent = ''; }, 2000);
+      }).catch(function (e) {
+        if (e !== 'cancelled') whisperStatusEl.textContent = 'Error: ' + e;
+      });
+    });
+
+    // Intercept window close → hide instead of destroy
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('tauri://close-requested', async function (event) {
+        // Prevent the default close action
+        var win = window.__TAURI__.window.getCurrentWindow();
+        await win.hide();
+      });
+    }
+  </script>
+</body>
+</html>

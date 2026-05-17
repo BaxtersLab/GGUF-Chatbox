@@ -1,0 +1,44 @@
+Context Echo Module — Automatic Memory Reinforcement for Long Chat Sessions
+
+Purpose:
+Prevents context drift in long conversations with local GGUF models by re-injecting
+condensed reminders of the original conversation context at token-usage milestones.
+
+How It Works:
+1. At session start, captures the system prompt + key early exchanges as the "echo source"
+2. Monitors running token count as a percentage of the context window
+3. At configurable milestones (default: 25%, 50%, 75% of ctx), splices a condensed
+   [Context Reminder] block inline into the next user turn
+4. The model encounters reminders naturally as part of the conversation — no special API
+
+Distinct from CWL4 Recalibration:
+- CWL4 Recalibration = user-defined behavioral reinforcement on a message cadence
+- Context Echo = automatic memory reinforcement at token-usage thresholds
+
+Implementation Notes:
+- Token counting: chars / 2 (same heuristic as AiSmartGuy)
+- Echo content options (configurable):
+  a) Full system prompt echo (simplest, costs ~500 tokens per echo)
+  b) Key-facts extraction (most token-efficient, needs one-time summarization)
+  c) Self-summarization at session start (model summarizes its own context into a compact block)
+- Token budget: each echo consumes context space
+  - At 32K ctx: 3 echoes x 500 tokens = 1500 tokens (<5%) — negligible
+  - At 8K ctx: same echoes cost ~18% — use shorter echoes or fewer milestones
+  - Auto-scaling: echo length capped at 1% of total ctx per reminder
+- Milestone config: fixed percentages by default, could add adaptive drift detection later
+
+Architecture:
+- Standalone crate/module, no dependency on AiSmartGuy
+- Input: original system prompt, chat history, current token count, ctx window size
+- Output: modified prompt with echo block spliced in (or unchanged if no milestone hit)
+- Hooks into chat_engine between history assembly and inference call
+
+Key Functions:
+- capture_echo_source(system_prompt, early_messages) -> EchoSource
+- check_milestone(current_tokens, ctx_size, config) -> Option<MilestoneHit>
+- inject_echo(prompt, echo_source, milestone) -> String
+- auto_scale_echo(echo_source, ctx_size) -> String  (trims echo to fit token budget)
+
+Dependencies:
+- None (pure logic module, no GPU/model/filesystem dependencies)
+- Optional: model inference for self-summarization mode (deferred to v2)
