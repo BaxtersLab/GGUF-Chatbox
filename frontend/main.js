@@ -1300,43 +1300,6 @@ window.CWL4 = (function () {
         if (m) statusEl.textContent = m[1] + '% …';
       }
     }).then(u => { _unlisten = u; }).catch(() => {});
-      '</div>' +
-      '<div id="hf-status" class="hf-status"></div>' +
-    '</div>';
-  }
-
-  function wireEvents(div) {
-    const urlInput = div.querySelector('#hf-url');
-    const dlBtn = div.querySelector('#hf-download-btn');
-    const resumeBtn = div.querySelector('#hf-resume-btn');
-    const progressDiv = div.querySelector('#hf-progress');
-    const progressBar = div.querySelector('#hf-progress-bar');
-    const progressText = div.querySelector('#hf-progress-text');
-    const statusEl = div.querySelector('#hf-status');
-
-    // Keep track of current URL so resume works
-    let currentUrl = null;
-
-    dlBtn.addEventListener('click', async () => {
-      const url = urlInput.value.trim();
-      if (!url) { statusEl.textContent = 'Enter a URL first.'; return; }
-      currentUrl = url;
-      dlBtn.disabled = true;
-      resumeBtn.style.display = 'none';
-      progressDiv.style.display = 'block';
-      statusEl.textContent = 'Starting download\u2026';
-      try {
-        await invoke('cmd_download_hf', { url: currentUrl });
-      } catch (e) {
-        statusEl.textContent = 'Error: ' + e;
-        dlBtn.disabled = false;
-        progressDiv.style.display = 'none';
-        resumeBtn.style.display = 'inline-block';
-      }
-    });
-
-    resumeBtn.addEventListener('click', async () => {
-      if (!currentUrl) { statusEl.textContent = 'No previous URL to resume.'; return; }
   }
 
   ExpansionSlots.register(4, {

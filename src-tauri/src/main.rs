@@ -2392,7 +2392,29 @@ fn install_llama_cpp(app: &AppHandle) -> Result<String, String> {
 
 // ── Entry point ───────────────────────────────────────────────────────────
 
+/// Binds a dedicated port to act as a single-instance lock.
+/// Returns the listener so it stays alive for the process lifetime.
+/// Exits immediately if another instance already holds the port.
+fn single_instance_guard() -> std::net::TcpListener {
+    match std::net::TcpListener::bind("127.0.0.1:19876") {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("[startup] GGUF Chatbox is already running.");
+            std::process::exit(0);
+        }
+    }
+}
+
 fn main() {
+    // Prevent duplicate instances — exits immediately if one is already running.
+    let _instance_lock = single_instance_guard();
+
+    // Guaranteed exit on panic — no headless zombies if the app crashes.
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("[panic] {info}");
+        std::process::exit(1);
+    }));
+
     tauri::Builder::default()
         .manage(Mutex::new(AppState {
             instance: None,
@@ -2460,6 +2482,13 @@ fn main() {
             cmd_fetch_hf_card,
         ])
         .on_window_event(|window, event| {
+            // If the main window is destroyed by a crash (not just close-requested),
+            // force-exit so no headless zombie lingers in Task Manager.
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    std::process::exit(0);
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label();
                 if label == "main" {
