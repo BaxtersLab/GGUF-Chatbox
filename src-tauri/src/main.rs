@@ -183,6 +183,8 @@ struct AppSettings {
     #[serde(default)]
     mmproj_path: String,
     #[serde(default)]
+    main_mmproj_path: String,
+    #[serde(default)]
     listening_model_path: String,
     #[serde(default)]
     active_app_profile: String,
@@ -219,6 +221,7 @@ impl Default for AppSettings {
             filter_msg_tags: true,
             vision_model_path: String::new(),
             mmproj_path: String::new(),
+            main_mmproj_path: String::new(),
             listening_model_path: String::new(),
             active_app_profile: "general".to_string(),
             auto_apply_card_params: true,
@@ -820,6 +823,7 @@ fn cmd_update_settings(
     max_context_override: Option<u32>,
     vision_model_path: Option<String>,
     mmproj_path: Option<String>,
+    main_mmproj_path: Option<String>,
     listening_model_path: Option<String>,
     use_main_for_vision: Option<bool>,
     use_main_for_audio: Option<bool>,
@@ -842,6 +846,7 @@ fn cmd_update_settings(
     if let Some(m) = max_context_override { settings.max_context_override = m; }
     if let Some(p) = vision_model_path { settings.vision_model_path = p; }
     if let Some(p) = mmproj_path { settings.mmproj_path = p; }
+    if let Some(p) = main_mmproj_path { settings.main_mmproj_path = p; }
     if let Some(p) = listening_model_path { settings.listening_model_path = p; }
     if let Some(v) = use_main_for_vision { settings.use_main_for_vision = v; }
     if let Some(v) = use_main_for_audio { settings.use_main_for_audio = v; }
@@ -889,11 +894,10 @@ fn cmd_start_server(state: State<Mutex<AppState>>) -> Result<(), String> {
         (None, None, None)
     };
 
-    // Use mmproj_path from settings if the user has one configured and the
-    // file exists — supports multimodal models (Phi-4, LLaVA, etc.) as the
-    // main chat model as well as the dedicated vision server.
+    // Pass main_mmproj_path to the server when set — required for multimodal
+    // models (Phi-4, LLaVA, etc.) loaded as the main chat model.
     let main_mmproj: Option<PathBuf> = {
-        let p = settings.mmproj_path.trim();
+        let p = settings.main_mmproj_path.trim();
         if !p.is_empty() {
             let pb = PathBuf::from(p);
             if pb.exists() { Some(pb) } else { None }
@@ -1499,6 +1503,18 @@ fn cmd_browse_vision_model() -> Result<String, String> {
 fn cmd_browse_mmproj() -> Result<String, String> {
     let file = rfd::FileDialog::new()
         .set_title("Select mmproj File (.gguf)")
+        .add_filter("GGUF mmproj", &["gguf"])
+        .pick_file();
+    match file {
+        Some(path) => Ok(path.to_string_lossy().into_owned()),
+        None => Err("cancelled".to_string()),
+    }
+}
+
+#[tauri::command]
+fn cmd_browse_main_mmproj() -> Result<String, String> {
+    let file = rfd::FileDialog::new()
+        .set_title("Select mmproj for Main Server (.gguf)")
         .add_filter("GGUF mmproj", &["gguf"])
         .pick_file();
     match file {
@@ -2698,6 +2714,7 @@ fn main() {
             cmd_vision_action,
             cmd_browse_vision_model,
             cmd_browse_mmproj,
+            cmd_browse_main_mmproj,
             cmd_start_vision_server,
             cmd_stop_vision_server,
             cmd_vision_server_status,

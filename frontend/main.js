@@ -817,22 +817,50 @@ window.CWL4 = (function () {
 // ── Server tray engine ────────────────────────────────────────────────────
 
 (function () {
-  const trayEl       = document.getElementById('server-tray');
-  const btnToggle    = document.getElementById('btn-server-tray');
-  const btnClose     = document.getElementById('btn-server-tray-close');
-  const beaconEl     = document.getElementById('server-beacon');
-  const statusText   = document.getElementById('srv-status-text');
-  const modelNameEl  = document.getElementById('srv-model-name');
-  const btnStart     = document.getElementById('btn-srv-start');
-  const btnStop      = document.getElementById('btn-srv-stop');
-  const btnCopyEp    = document.getElementById('btn-srv-copy-endpoint');
-  const wsPathInput  = document.getElementById('srv-workspace-path');
-  const btnWriteCfg  = document.getElementById('btn-srv-write-config');
-  const cfgStatus    = document.getElementById('srv-config-status');
+  const trayEl            = document.getElementById('server-tray');
+  const btnToggle         = document.getElementById('btn-server-tray');
+  const btnClose          = document.getElementById('btn-server-tray-close');
+  const beaconEl          = document.getElementById('server-beacon');
+  const statusText        = document.getElementById('srv-status-text');
+  const modelNameEl       = document.getElementById('srv-model-name');
+  const btnStart          = document.getElementById('btn-srv-start');
+  const btnStop           = document.getElementById('btn-srv-stop');
+  const btnCopyEp         = document.getElementById('btn-srv-copy-endpoint');
+  const wsPathInput       = document.getElementById('srv-workspace-path');
+  const btnWriteCfg       = document.getElementById('btn-srv-write-config');
+  const cfgStatus         = document.getElementById('srv-config-status');
+  const mainMmprojInput   = document.getElementById('srv-main-mmproj');
+  const btnBrowseMainMmp  = document.getElementById('btn-srv-browse-main-mmproj');
+  const btnClearMainMmp   = document.getElementById('btn-srv-clear-main-mmproj');
+
+  // Load saved main_mmproj_path when tray opens.
+  async function loadMainMmproj() {
+    try {
+      const s = await invoke('cmd_get_settings');
+      if (mainMmprojInput) mainMmprojInput.value = s.main_mmproj_path || '';
+    } catch (_) {}
+  }
+
+  if (btnBrowseMainMmp) {
+    btnBrowseMainMmp.addEventListener('click', async () => {
+      try {
+        const path = await invoke('cmd_browse_main_mmproj');
+        mainMmprojInput.value = path;
+        await invoke('cmd_update_settings', { mainMmprojPath: path });
+      } catch (e) { if (e !== 'cancelled') cfgStatus && (cfgStatus.textContent = 'mmproj error: ' + e); }
+    });
+  }
+
+  if (btnClearMainMmp) {
+    btnClearMainMmp.addEventListener('click', async () => {
+      mainMmprojInput.value = '';
+      await invoke('cmd_update_settings', { mainMmprojPath: '' }).catch(() => {});
+    });
+  }
 
   let pollTimer = null;
 
-  function openTray()  { trayEl.style.display = 'flex'; startPolling(); }
+  function openTray()  { trayEl.style.display = 'flex'; startPolling(); loadMainMmproj(); }
   function closeTray() { trayEl.style.display = 'none'; stopPolling(); }
 
   btnToggle.addEventListener('click', () => {
