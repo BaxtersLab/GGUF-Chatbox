@@ -889,10 +889,24 @@ fn cmd_start_server(state: State<Mutex<AppState>>) -> Result<(), String> {
         (None, None, None)
     };
 
+    // Use mmproj_path from settings if the user has one configured and the
+    // file exists — supports multimodal models (Phi-4, LLaVA, etc.) as the
+    // main chat model as well as the dedicated vision server.
+    let main_mmproj: Option<PathBuf> = {
+        let p = settings.mmproj_path.trim();
+        if !p.is_empty() {
+            let pb = PathBuf::from(p);
+            if pb.exists() { Some(pb) } else { None }
+        } else {
+            None
+        }
+    };
+
     let config = ServerConfig {
         model_path: model_path.clone(),
         context_length: ctx,
         threads: 9,
+        mmproj_path: main_mmproj,
         temperature_override: temp_override,
         n_predict_override,
         ctx_cap_override,

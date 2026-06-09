@@ -6,6 +6,8 @@ use crate::types::SamplingConfig;
 /// Configuration for spawning a llama-server instance.
 pub struct ServerConfig {
     pub model_path: std::path::PathBuf,
+    /// Multimodal projector file (.gguf). Required for vision models.
+    pub mmproj_path: Option<std::path::PathBuf>,
     pub context_length: u32,
     pub gpu_layers: u32,
     pub threads: u32,
@@ -53,6 +55,10 @@ pub fn start_server(config: &ServerConfig) -> LoaderResult<()> {
         .arg(config.gpu_layers.to_string())
         .arg("--threads")
         .arg(config.threads.to_string());
+
+    if let Some(ref mp) = config.mmproj_path {
+        cmd.arg("--mmproj").arg(mp);
+    }
 
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());

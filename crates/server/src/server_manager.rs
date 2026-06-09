@@ -50,6 +50,9 @@ pub fn start_server(config: &ServerConfig) -> Result<(), String> {
        .arg("--n-gpu-layers").arg(gpu_layers.to_string())
        .arg("--threads").arg(config.threads.to_string());
 
+    if let Some(ref mp) = config.mmproj_path {
+        cmd.arg("--mmproj").arg(mp);
+    }
     if let Some(temp) = config.temperature_override {
         cmd.arg("--temp").arg(temp.to_string());
     }

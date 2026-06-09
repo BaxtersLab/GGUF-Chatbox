@@ -7,6 +7,10 @@ pub struct ServerConfig {
     pub model_path: PathBuf,
     pub context_length: u32,
     pub threads: u32,
+    /// Multimodal projector file (.gguf).  Required for vision-capable models
+    /// (Phi-4 multimodal, LLaVA, MiniCPM-V, etc.).  `None` for text-only models.
+    #[serde(default)]
+    pub mmproj_path: Option<PathBuf>,
     /// Optional temperature override from the active app profile.
     #[serde(default)]
     pub temperature_override: Option<f32>,
