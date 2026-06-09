@@ -1495,6 +1495,13 @@ window.CWL4 = (function () {
           <button id="vision-custom" disabled>Custom</button>
         </div>
         <div style="margin-top:8px"><button id="vision-analyze" disabled>Analyze Image</button></div>
+        <div class="mm-toggle-row" style="margin-top:8px">
+          <label class="mm-toggle-label">
+            <input type="checkbox" id="vision-use-main-chk" />
+            Use main multimodal model
+          </label>
+          <span id="vision-use-main-warn" class="mm-warning" style="display:none;">&#x26A0; Main model does not support vision input</span>
+        </div>
         <div id="vision-status" style="margin-top:8px;color:var(--text-dim)"></div>
         <pre id="vision-result" style="margin-top:8px;white-space:pre-wrap;word-break:break-word;font-size:12px"></pre>
       </div>`;
@@ -1502,11 +1509,40 @@ window.CWL4 = (function () {
       const fileEl = div.querySelector('#vision-file');
       const imgEl = div.querySelector('#vision-preview');
       const btn = div.querySelector('#vision-analyze');
-        const btnAnnotate = div.querySelector('#vision-annotate');
-        const btnOcr = div.querySelector('#vision-ocr');
-        const btnCustom = div.querySelector('#vision-custom');
+      const btnAnnotate = div.querySelector('#vision-annotate');
+      const btnOcr = div.querySelector('#vision-ocr');
+      const btnCustom = div.querySelector('#vision-custom');
       const status = div.querySelector('#vision-status');
       const result = div.querySelector('#vision-result');
+      const useMainChk  = div.querySelector('#vision-use-main-chk');
+      const useMainWarn = div.querySelector('#vision-use-main-warn');
+
+      // Load persisted toggle state and run capability check.
+      async function refreshVisionToggleState() {
+        try {
+          const s = await invoke('cmd_get_settings');
+          useMainChk.checked = s.use_main_for_vision ?? false;
+        } catch (_) {}
+        try {
+          const capable = await invoke('cmd_check_main_model_has_vision');
+          if (!capable) {
+            useMainChk.disabled = true;
+            useMainChk.checked  = false;
+            useMainWarn.style.display = 'inline';
+          } else {
+            useMainChk.disabled = false;
+            useMainWarn.style.display = 'none';
+          }
+        } catch (_) {
+          useMainChk.disabled = true;
+          useMainWarn.style.display = 'inline';
+        }
+      }
+      refreshVisionToggleState();
+
+      useMainChk.addEventListener('change', async () => {
+        try { await invoke('cmd_update_settings', { useMainForVision: useMainChk.checked }); } catch (_) {}
+      });
 
       fileEl.addEventListener('change', () => {
         const f = fileEl.files[0];
@@ -1538,27 +1574,19 @@ window.CWL4 = (function () {
               if (btnOcr) btnOcr.disabled = false;
               if (btnCustom) btnCustom.disabled = false;
               const savedPath = resp.saved_as;
-              if (btnAnnotate) btnAnnotate.onclick = async () => {
-                status.textContent = 'Running annotate...';
+              async function doVisionAction(action, label) {
+                status.textContent = 'Running ' + label + '…';
                 try {
-                  const r = await invoke('cmd_vision_action', { action: 'annotate', image_path: savedPath });
+                  const useMain = useMainChk && useMainChk.checked && !useMainChk.disabled;
+                  const cmd = useMain ? 'cmd_vision_action_main' : 'cmd_vision_action';
+                  const r = await invoke(cmd, { action, image_path: savedPath });
                   result.textContent = JSON.stringify(r, null, 2);
-                } catch (e) { status.textContent = 'Annotate failed: ' + e; }
-              };
-              if (btnOcr) btnOcr.onclick = async () => {
-                status.textContent = 'Running OCR...';
-                try {
-                  const r = await invoke('cmd_vision_action', { action: 'ocr', image_path: savedPath });
-                  result.textContent = JSON.stringify(r, null, 2);
-                } catch (e) { status.textContent = 'OCR failed: ' + e; }
-              };
-              if (btnCustom) btnCustom.onclick = async () => {
-                status.textContent = 'Running custom action...';
-                try {
-                  const r = await invoke('cmd_vision_action', { action: 'custom', image_path: savedPath });
-                  result.textContent = JSON.stringify(r, null, 2);
-                } catch (e) { status.textContent = 'Custom failed: ' + e; }
-              };
+                  status.textContent = label + ' complete.';
+                } catch (e) { status.textContent = label + ' failed: ' + e; }
+              }
+              if (btnAnnotate) btnAnnotate.onclick = () => doVisionAction('annotate', 'Annotate');
+              if (btnOcr)      btnOcr.onclick      = () => doVisionAction('ocr',      'OCR');
+              if (btnCustom)   btnCustom.onclick   = () => doVisionAction('custom',   'Custom');
               // Show Open in BSR button
               let openBtn = div.querySelector('#vision-open-bsr');
               if (!openBtn) {
@@ -1620,6 +1648,15 @@ window.CWL4 = (function () {
     <button id="ls-review"    disabled>\uD83D\uDD0D Review Audio File</button>
   </div>
 
+  <!-- Multimodal routing toggle -->
+  <div class="mm-toggle-row">
+    <label class="mm-toggle-label">
+      <input type="checkbox" id="ls-use-main-chk" />
+      Use main multimodal model
+    </label>
+    <span id="ls-use-main-warn" class="mm-warning" style="display:none;">&#x26A0; Whisper not configured \u2014 ASR required</span>
+  </div>
+
   <!-- Server status hint -->
   <div id="ls-server-hint" style="font-size:10px;color:var(--text-dim)">
     Listening Server: checking…
@@ -1636,15 +1673,45 @@ window.CWL4 = (function () {
 
 </div>`;
 
-      const filePathEl  = div.querySelector('#ls-file-path');
-      const browseBtn   = div.querySelector('#ls-browse');
-      const genTagsBtn  = div.querySelector('#ls-gen-tags');
-      const transBtn    = div.querySelector('#ls-transcribe');
-      const reviewBtn   = div.querySelector('#ls-review');
-      const serverHint  = div.querySelector('#ls-server-hint');
-      const statusEl    = div.querySelector('#ls-status');
-      const resultEl    = div.querySelector('#ls-result');
-      let currentFile   = null;
+      const filePathEl   = div.querySelector('#ls-file-path');
+      const browseBtn    = div.querySelector('#ls-browse');
+      const genTagsBtn   = div.querySelector('#ls-gen-tags');
+      const transBtn     = div.querySelector('#ls-transcribe');
+      const reviewBtn    = div.querySelector('#ls-review');
+      const serverHint   = div.querySelector('#ls-server-hint');
+      const statusEl     = div.querySelector('#ls-status');
+      const resultEl     = div.querySelector('#ls-result');
+      const lsUseMainChk  = div.querySelector('#ls-use-main-chk');
+      const lsUseMainWarn = div.querySelector('#ls-use-main-warn');
+      let currentFile    = null;
+
+      // Load persisted toggle state and check Whisper availability.
+      async function refreshAudioToggleState() {
+        try {
+          const s = await invoke('cmd_get_settings');
+          lsUseMainChk.checked = s.use_main_for_audio ?? false;
+          const whisperReady = s.whisper_exe_path && s.whisper_exe_path.length > 0
+                            && s.whisper_model_path && s.whisper_model_path.length > 0;
+          if (!whisperReady) {
+            lsUseMainChk.disabled = true;
+            lsUseMainChk.checked  = false;
+            lsUseMainWarn.style.display = 'inline';
+          } else {
+            lsUseMainChk.disabled = false;
+            lsUseMainWarn.style.display = 'none';
+          }
+        } catch (_) {
+          lsUseMainChk.disabled = true;
+          lsUseMainWarn.style.display = 'inline';
+        }
+      }
+      refreshAudioToggleState();
+
+      lsUseMainChk.addEventListener('change', async () => {
+        try { await invoke('cmd_update_settings', { useMainForAudio: lsUseMainChk.checked }); } catch (_) {}
+        // Hide/show server hint based on routing mode.
+        serverHint.style.display = lsUseMainChk.checked ? 'none' : '';
+      });
 
       // Check listening server status
       async function checkServer() {
@@ -1681,15 +1748,25 @@ window.CWL4 = (function () {
 
       async function runAction(action) {
         if (!currentFile) return;
-        const up = await checkServer();
-        if (!up) { statusEl.textContent = 'Start the Listening Server first (SERVER tray).'; return; }
         statusEl.textContent = 'Running ' + action + '…';
+        statusEl.style.color = 'var(--text-dim)';
         resultEl.textContent = '';
         genTagsBtn.disabled = transBtn.disabled = reviewBtn.disabled = true;
         try {
-          const r = await invoke('cmd_listening_action', { action, filePath: currentFile });
-          resultEl.textContent = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
-          statusEl.textContent = action + ' complete.';
+          const useMain = lsUseMainChk && lsUseMainChk.checked && !lsUseMainChk.disabled;
+          if (useMain) {
+            // Route: whisper-cli → transcript → main model (port 8080)
+            const r = await invoke('cmd_audio_transcribe_then_reason', { filePath: currentFile, action });
+            resultEl.textContent = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+            statusEl.textContent = action + ' complete (via main model).';
+          } else {
+            // Existing path: dedicated Listening Server (port 8083)
+            const up = await checkServer();
+            if (!up) { statusEl.textContent = 'Start the Listening Server first (SERVER tray).'; return; }
+            const r = await invoke('cmd_listening_action', { action, filePath: currentFile });
+            resultEl.textContent = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+            statusEl.textContent = action + ' complete.';
+          }
         } catch (e) {
           statusEl.textContent = 'Error: ' + e;
           statusEl.style.color = '#f87171';

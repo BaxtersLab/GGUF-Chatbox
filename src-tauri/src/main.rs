@@ -188,6 +188,10 @@ struct AppSettings {
     active_app_profile: String,
     #[serde(default = "default_auto_apply_card")]
     auto_apply_card_params: bool,
+    #[serde(default)]
+    use_main_for_vision: bool,
+    #[serde(default)]
+    use_main_for_audio: bool,
 }
 
 fn default_silence_timeout() -> u32 { 5 }
@@ -218,6 +222,8 @@ impl Default for AppSettings {
             listening_model_path: String::new(),
             active_app_profile: "general".to_string(),
             auto_apply_card_params: true,
+            use_main_for_vision: false,
+            use_main_for_audio: false,
         }
     }
 }
@@ -815,6 +821,8 @@ fn cmd_update_settings(
     vision_model_path: Option<String>,
     mmproj_path: Option<String>,
     listening_model_path: Option<String>,
+    use_main_for_vision: Option<bool>,
+    use_main_for_audio: Option<bool>,
     state: State<Mutex<AppState>>,
 ) -> Result<(), String> {
     let mut settings = cmd_get_settings();
@@ -835,6 +843,8 @@ fn cmd_update_settings(
     if let Some(p) = vision_model_path { settings.vision_model_path = p; }
     if let Some(p) = mmproj_path { settings.mmproj_path = p; }
     if let Some(p) = listening_model_path { settings.listening_model_path = p; }
+    if let Some(v) = use_main_for_vision { settings.use_main_for_vision = v; }
+    if let Some(v) = use_main_for_audio { settings.use_main_for_audio = v; }
     let path = settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1896,6 +1906,210 @@ fn cmd_transcribe_audio(audio_data: Vec<u8>) -> Result<String, String> {
     Ok(text)
 }
 
+// ── Multimodal routing ────────────────────────────────────────────────────
+
+/// Returns true if the currently loaded main model appears to support vision
+/// (image_url) input — checked via architecture string and settings fallback.
+#[tauri::command]
+fn cmd_check_main_model_has_vision(state: State<Mutex<AppState>>) -> bool {
+    let model_path = {
+        let guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        guard.instance.as_ref().map(|i| i.config.model_path.clone())
+    };
+    let model_path = match model_path {
+        Some(p) => p,
+        None => return false,
+    };
+    let card = load_or_build_card(std::path::Path::new(&model_path));
+    let arch = card.architecture.to_lowercase();
+    if arch.contains("llava") || arch.contains("moondream") || arch.contains("minicpm")
+        || arch.contains("idefics") || arch.contains("internvl") || arch.contains("bakllava")
+        || arch.contains("bunny") || arch.contains("vision")
+    {
+        return true;
+    }
+    // Fallback: user loaded the dedicated vision model as the main model.
+    let settings = cmd_get_settings();
+    !settings.vision_model_path.is_empty() && settings.vision_model_path == model_path
+}
+
+/// Same as cmd_vision_action but routes to the main text server (port 8080)
+/// instead of the dedicated vision server (port 8082).
+#[tauri::command]
+fn cmd_vision_action_main(app: AppHandle, action: String, image_path: String) -> Result<serde_json::Value, String> {
+    let img_bytes = std::fs::read(&image_path)
+        .map_err(|e| format!("Cannot read image {}: {}", image_path, e))?;
+    let b64 = base64::encode(&img_bytes);
+
+    let ext = std::path::Path::new(&image_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("jpeg")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "png"  => "image/png",
+        "gif"  => "image/gif",
+        "webp" => "image/webp",
+        _      => "image/jpeg",
+    };
+    let data_url = format!("data:{};base64,{}", mime, b64);
+
+    let prompt_text = match action.as_str() {
+        "annotate" => "List all objects visible in this image with their approximate positions.",
+        "ocr"      => "Extract all text visible in this image verbatim.",
+        "custom"   => "Describe this image in as much detail as possible.",
+        other      => return Err(format!("Unknown vision action: {}", other)),
+    };
+
+    emit_debug_log(&app, &format!("[vision-main] action={} image={}", action, image_path), false);
+
+    let body = serde_json::json!({
+        "model": "local",
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "image_url", "image_url": { "url": data_url } },
+                { "type": "text", "text": prompt_text }
+            ]
+        }],
+        "max_tokens": 1024
+    });
+
+    let resp = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .post("http://127.0.0.1:8080/v1/chat/completions")
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("Main model server not reachable (is it started?): {}", e))?;
+
+    let resp_body = resp.into_string()
+        .map_err(|e| format!("Cannot read main model response: {}", e))?;
+    let resp_val: serde_json::Value = serde_json::from_str(&resp_body)
+        .map_err(|e| format!("Bad JSON from main model: {}", e))?;
+
+    let reply = resp_val["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    emit_debug_log(&app, &format!("[vision-main] reply ({} chars)", reply.len()), false);
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "action": action,
+        "image": image_path,
+        "result": reply,
+        "raw": resp_val
+    }))
+}
+
+/// Transcribes an audio file via whisper-cli then sends the transcript to the
+/// main model (port 8080) for reasoning.  Used when "Use main multimodal model"
+/// is toggled ON in the Listening panel.
+#[tauri::command]
+fn cmd_audio_transcribe_then_reason(app: AppHandle, file_path: String, action: String) -> Result<serde_json::Value, String> {
+    let settings = cmd_get_settings();
+    if settings.whisper_exe_path.is_empty() {
+        return Err("Whisper exe path not set. Configure it in Advanced Settings.".to_string());
+    }
+    if settings.whisper_model_path.is_empty() {
+        return Err("Whisper model not set. Configure it in Advanced Settings.".to_string());
+    }
+    let exe = std::path::PathBuf::from(&settings.whisper_exe_path);
+    if !exe.exists() {
+        return Err(format!("whisper-cli not found at: {}", settings.whisper_exe_path));
+    }
+    let model = std::path::PathBuf::from(&settings.whisper_model_path);
+    if !model.exists() {
+        return Err(format!("Whisper model not found at: {}", settings.whisper_model_path));
+    }
+    let audio = std::path::PathBuf::from(&file_path);
+    if !audio.exists() {
+        return Err(format!("Audio file not found: {}", file_path));
+    }
+
+    emit_debug_log(&app, &format!("[audio-main] transcribing: {}", file_path), false);
+
+    let output = std::process::Command::new(&exe)
+        .arg("-m").arg(&model)
+        .arg("-f").arg(&audio)
+        .arg("--no-timestamps")
+        .arg("-nt")
+        .arg("-l").arg("en")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to run whisper-cli: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("whisper-cli error: {}", stderr.trim()));
+    }
+
+    let transcript = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    emit_debug_log(&app, &format!("[audio-main] transcript {} chars, action={}", transcript.len(), action), false);
+
+    // For plain transcription, return the result directly without an LLM call.
+    if action == "transcribe" {
+        return Ok(serde_json::json!({
+            "ok": true,
+            "action": "transcribe",
+            "file": file_path,
+            "transcription": { "source": "whisper-cli", "language": "en", "text": transcript }
+        }));
+    }
+
+    let system_prompt = match action.as_str() {
+        "generate_tags" => "You are a music analyst. Given an audio transcript, infer and return a JSON object with keys: genre, mood, energy, tempo, and tags (array of strings). Be concise.",
+        "review"        => "You are an audio content reviewer. Given a transcript, provide a structured review covering: content summary, tone, notable moments, and quality assessment.",
+        other           => return Err(format!("Unknown audio action: {}", other)),
+    };
+
+    let user_prompt = format!("Audio file: {}\n\nTranscript:\n{}", file_path, transcript);
+
+    let body = serde_json::json!({
+        "model": "local",
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user",   "content": user_prompt }
+        ],
+        "max_tokens": 1024
+    });
+
+    let resp = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .post("http://127.0.0.1:8080/v1/chat/completions")
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("Main model server not reachable (is it started?): {}", e))?;
+
+    let resp_body = resp.into_string()
+        .map_err(|e| format!("Cannot read main model response: {}", e))?;
+    let resp_val: serde_json::Value = serde_json::from_str(&resp_body)
+        .map_err(|e| format!("Bad JSON from main model: {}", e))?;
+
+    let reply = resp_val["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    emit_debug_log(&app, &format!("[audio-main] reply ({} chars)", reply.len()), false);
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "action": action,
+        "file": file_path,
+        "transcript": transcript,
+        "result": reply,
+        "raw": resp_val
+    }))
+}
+
 // ── Voicebox TTS ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -2455,6 +2669,9 @@ fn main() {
             cmd_browse_whisper_exe,
             cmd_browse_whisper_model,
             cmd_transcribe_audio,
+            cmd_check_main_model_has_vision,
+            cmd_vision_action_main,
+            cmd_audio_transcribe_then_reason,
             cmd_voicebox_status,
             cmd_voicebox_profiles,
             cmd_voicebox_speak,

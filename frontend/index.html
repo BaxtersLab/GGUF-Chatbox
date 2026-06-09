@@ -129,6 +129,13 @@
             <span id="srv-listening-beacon" class="server-beacon beacon-stopped" style="margin-left:2px;"></span>
             <span id="srv-listening-status" style="font-size:11px;color:var(--text-dim);"></span>
           </div>
+          <div class="mm-toggle-row">
+            <label class="mm-toggle-label">
+              <input type="checkbox" id="chk-audio-use-main" />
+              Use main multimodal model
+            </label>
+            <span id="audio-mm-warning" class="mm-warning" style="display:none;">&#x26A0; Whisper not configured — ASR required</span>
+          </div>
           <hr class="srv-sep" />
           <div class="srv-section-label">Vision Server <span style="font-size:10px;opacity:0.6;font-weight:normal;">port 8082</span></div>
           <div class="srv-row" style="gap:4px;">
@@ -146,6 +153,13 @@
             <button id="btn-vision-stop" style="font-size:11px;padding:3px 10px;">Stop</button>
             <span id="srv-vision-beacon" class="server-beacon beacon-stopped" style="margin-left:2px;"></span>
             <span id="srv-vision-status" style="font-size:11px;color:var(--text-dim);"></span>
+          </div>
+          <div class="mm-toggle-row">
+            <label class="mm-toggle-label">
+              <input type="checkbox" id="chk-vision-use-main" />
+              Use main multimodal model
+            </label>
+            <span id="vision-mm-warning" class="mm-warning" style="display:none;">&#x26A0; Main model does not support vision input</span>
           </div>
         </div>
       </div>
