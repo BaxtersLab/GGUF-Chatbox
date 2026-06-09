@@ -403,6 +403,37 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     }
   }).catch(() => {});
 
+  // ── mmproj field ─────────────────────────────────────────────────────────
+  const trayMmprojInput  = document.getElementById('tray-mmproj');
+  const btnTrayBrowseMmp = document.getElementById('btn-tray-browse-mmproj');
+  const btnTrayClearMmp  = document.getElementById('btn-tray-clear-mmproj');
+
+  // Load saved main_mmproj_path whenever the model tray opens.
+  const _origModelOpen = openTray;
+  openTray = function () {
+    _origModelOpen();
+    invoke('cmd_get_settings').then(s => {
+      if (trayMmprojInput) trayMmprojInput.value = s.main_mmproj_path || '';
+    }).catch(() => {});
+  };
+
+  if (btnTrayBrowseMmp) {
+    btnTrayBrowseMmp.addEventListener('click', async () => {
+      try {
+        const p = await invoke('cmd_browse_main_mmproj');
+        trayMmprojInput.value = p;
+        await invoke('cmd_update_settings', { mainMmprojPath: p });
+      } catch (e) { if (e !== 'cancelled') statusEl.textContent = 'mmproj error: ' + e; }
+    });
+  }
+
+  if (btnTrayClearMmp) {
+    btnTrayClearMmp.addEventListener('click', async () => {
+      trayMmprojInput.value = '';
+      await invoke('cmd_update_settings', { mainMmprojPath: '' }).catch(() => {});
+    });
+  }
+
   window.ModelTray = { openTray, closeTray };
 
   // Eject button
@@ -829,38 +860,9 @@ window.CWL4 = (function () {
   const wsPathInput       = document.getElementById('srv-workspace-path');
   const btnWriteCfg       = document.getElementById('btn-srv-write-config');
   const cfgStatus         = document.getElementById('srv-config-status');
-  const mainMmprojInput   = document.getElementById('srv-main-mmproj');
-  const btnBrowseMainMmp  = document.getElementById('btn-srv-browse-main-mmproj');
-  const btnClearMainMmp   = document.getElementById('btn-srv-clear-main-mmproj');
-
-  // Load saved main_mmproj_path when tray opens.
-  async function loadMainMmproj() {
-    try {
-      const s = await invoke('cmd_get_settings');
-      if (mainMmprojInput) mainMmprojInput.value = s.main_mmproj_path || '';
-    } catch (_) {}
-  }
-
-  if (btnBrowseMainMmp) {
-    btnBrowseMainMmp.addEventListener('click', async () => {
-      try {
-        const path = await invoke('cmd_browse_main_mmproj');
-        mainMmprojInput.value = path;
-        await invoke('cmd_update_settings', { mainMmprojPath: path });
-      } catch (e) { if (e !== 'cancelled') cfgStatus && (cfgStatus.textContent = 'mmproj error: ' + e); }
-    });
-  }
-
-  if (btnClearMainMmp) {
-    btnClearMainMmp.addEventListener('click', async () => {
-      mainMmprojInput.value = '';
-      await invoke('cmd_update_settings', { mainMmprojPath: '' }).catch(() => {});
-    });
-  }
-
   let pollTimer = null;
 
-  function openTray()  { trayEl.style.display = 'flex'; startPolling(); loadMainMmproj(); }
+  function openTray()  { trayEl.style.display = 'flex'; startPolling(); }
   function closeTray() { trayEl.style.display = 'none'; stopPolling(); }
 
   btnToggle.addEventListener('click', () => {

@@ -81,6 +81,11 @@
           <button id="btn-tray-load" disabled>Load Model</button>
           <button id="btn-tray-eject" class="model-tray-eject" disabled title="Eject current model">&#x23CF; Eject</button>
         </div>
+        <div class="model-tray-mmproj-row">
+          <input type="text" id="tray-mmproj" readonly placeholder="mmproj .gguf — required for Phi-4 / vision models" />
+          <button id="btn-tray-browse-mmproj">mmproj…</button>
+          <button id="btn-tray-clear-mmproj" title="Clear mmproj" style="opacity:0.6;">✕</button>
+        </div>
         <div id="model-tray-status" class="model-tray-status"></div>
       </div>
 
@@ -103,12 +108,6 @@
           <div class="srv-row">
             <span class="srv-label">Model:</span>
             <span id="srv-model-name" class="srv-value">—</span>
-          </div>
-          <div class="srv-row" id="srv-main-mmproj-row">
-            <span class="srv-label" style="flex-shrink:0;">mmproj:</span>
-            <input type="text" id="srv-main-mmproj" readonly placeholder="mmproj .gguf — required for vision models (Phi-4, LLaVA…)" style="flex:1;font-size:11px;" />
-            <button id="btn-srv-browse-main-mmproj" style="font-size:11px;padding:3px 7px;white-space:nowrap;">Browse…</button>
-            <button id="btn-srv-clear-main-mmproj" style="font-size:11px;padding:3px 5px;opacity:0.6;" title="Clear mmproj">✕</button>
           </div>
           <div class="srv-actions">
             <button id="btn-srv-start">Start Server</button>
