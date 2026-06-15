@@ -2643,15 +2643,19 @@ fn single_instance_guard() -> std::net::TcpListener {
     match std::net::TcpListener::bind("127.0.0.1:19876") {
         Ok(l) => l,
         Err(_) => {
-            eprintln!("[startup] GGUF Chatbox is already running.");
+            // Another instance already owns the lock. Nudge it to the
+            // foreground (handled by the accept-loop in setup) so the user sees
+            // the running window instead of a silent no-op, then exit this copy.
+            let _ = std::net::TcpStream::connect("127.0.0.1:19876");
+            eprintln!("[startup] GGUF Chatbox is already running — focusing the existing window.");
             std::process::exit(0);
         }
     }
 }
 
 fn main() {
-    // Prevent duplicate instances — exits immediately if one is already running.
-    let _instance_lock = single_instance_guard();
+    // Prevent duplicate instances — a second launch focuses the running window.
+    let instance_lock = single_instance_guard();
 
     // Guaranteed exit on panic — no headless zombies if the app crashes.
     std::panic::set_hook(Box::new(|info| {
@@ -2671,6 +2675,30 @@ fn main() {
             spawned_children: Vec::new(),
             spawned_pids: Vec::new(),
         }))
+        .setup(move |app| {
+            // Single-instance focus: when a duplicate launch connects to our
+            // lock port, bring the existing main window to the foreground
+            // instead of silently exiting (which used to leave the user
+            // clicking a hidden/orphaned window and thinking buttons were dead).
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                for stream in instance_lock.incoming() {
+                    if stream.is_err() {
+                        continue;
+                    }
+                    let h = handle.clone();
+                    // Window ops must run on the main thread.
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Some(w) = h.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    });
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             cmd_list_models,
             cmd_load_model,
