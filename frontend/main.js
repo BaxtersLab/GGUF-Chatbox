@@ -107,9 +107,30 @@ window.ChatEngine = (function () {
     div.innerHTML = `
       <div class="message-role">${role === 'user' ? 'You' : 'Assistant'}</div>
       <div class="message-bubble">${escHtml(text)}</div>`;
+    if (role !== 'system') addCopyBtn(div, () => text);
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     return div;
+  }
+
+  // Per-message one-click copy button (self-styled; copies the raw message text).
+  function addCopyBtn(div, getText) {
+    const btn = document.createElement('button');
+    btn.textContent = '📋 copy';
+    btn.title = 'Copy this message';
+    btn.style.cssText = 'display:block;margin-top:4px;font-size:11px;padding:2px 6px;'
+      + 'cursor:pointer;background:transparent;border:1px solid rgba(255,255,255,0.2);'
+      + 'border-radius:4px;color:inherit;opacity:0.55;';
+    btn.onmouseenter = () => { btn.style.opacity = '1'; };
+    btn.onmouseleave = () => { btn.style.opacity = '0.55'; };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(getText() || '').then(() => {
+        btn.textContent = '✓ copied';
+        setTimeout(() => { btn.textContent = '📋 copy'; }, 1200);
+      }).catch(() => {});
+    });
+    div.appendChild(btn);
   }
 
   function escHtml(s) {
@@ -118,6 +139,7 @@ window.ChatEngine = (function () {
 
   // Start streaming assistant bubble
   let activeBubble = null;
+  let activeBubbleDiv = null;
   let activeTokens = '';
 
   function startAssistantBubble() {
@@ -128,6 +150,7 @@ window.ChatEngine = (function () {
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     activeBubble = div.querySelector('.message-bubble');
+    activeBubbleDiv = div;
     activeTokens = '';
   }
 
@@ -141,7 +164,10 @@ window.ChatEngine = (function () {
   function finaliseAssistantBubble() {
     if (activeBubble) {
       history.push({ role: 'assistant', content: activeTokens });
+      const finalText = activeTokens;
+      if (activeBubbleDiv) addCopyBtn(activeBubbleDiv, () => finalText);
       activeBubble = null;
+      activeBubbleDiv = null;
     }
   }
 
