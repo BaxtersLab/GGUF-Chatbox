@@ -1,6 +1,8 @@
 # Rust build artifacts
 target/
-Cargo.lock
+# Cargo.lock IS tracked — GGUF Chatbox is an application (binary), so the lockfile
+# is committed for reproducible builds. Do not re-ignore it (a clean clone floated
+# `time` to 0.3.52 which broke `cookie 0.18.1`; the pinned lock prevents that).
 
 # Python
 __pycache__/
