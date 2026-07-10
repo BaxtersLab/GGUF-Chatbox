@@ -24,31 +24,44 @@ const UPSTREAM_ADDR: &str = "127.0.0.1:8081";
 ///
 /// `dispatcher` must be `Send + Sync + 'static` so it can be shared across threads.
 pub fn start_proxy<D: ToolDispatcher + Send + Sync + 'static>(dispatcher: D) {
-    let listener = match TcpListener::bind("127.0.0.1:8080") {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[proxy] bind failed: {e}");
-            return;
-        }
-    };
+    if let Err(e) = start_proxy_on("127.0.0.1:8080", UPSTREAM_ADDR, dispatcher) {
+        eprintln!("[proxy] bind failed: {e}");
+    }
+}
+
+/// Start the proxy on an explicit listen address, forwarding to an explicit
+/// upstream address. Returns `Err` if the listen address cannot be bound
+/// (e.g. the port is already taken); on success it blocks serving connections.
+///
+/// `start_proxy` delegates here with the default 8080/8081 addresses — the
+/// explicit form exists for tests and for future multi-slot listeners.
+pub fn start_proxy_on<D: ToolDispatcher + Send + Sync + 'static>(
+    addr: &str,
+    upstream: &str,
+    dispatcher: D,
+) -> Result<(), String> {
+    let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr} failed: {e}"))?;
 
     use std::sync::Arc;
     let dispatcher = Arc::new(dispatcher);
+    let upstream = Arc::new(upstream.to_string());
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let d = Arc::clone(&dispatcher);
-                thread::spawn(move || handle_connection(stream, d.as_ref()));
+                let u = Arc::clone(&upstream);
+                thread::spawn(move || handle_connection(stream, d.as_ref(), &u));
             }
             Err(_) => break,
         }
     }
+    Ok(())
 }
 
 // ── Connection handler ────────────────────────────────────────────────────
 
-fn handle_connection<D: ToolDispatcher>(mut client: TcpStream, dispatcher: &D) {
+fn handle_connection<D: ToolDispatcher>(mut client: TcpStream, dispatcher: &D, upstream: &str) {
     let (method, path, headers, body) = match read_request(&mut client) {
         Some(r) => r,
         None => return,
@@ -56,7 +69,7 @@ fn handle_connection<D: ToolDispatcher>(mut client: TcpStream, dispatcher: &D) {
 
     if method != "POST" || path != "/v1/chat/completions" {
         // Pass through everything else unchanged.
-        let response = forward_raw(&method, &path, &headers, &body);
+        let response = forward_raw(upstream, &method, &path, &headers, &body);
         let _ = client.write_all(response.as_bytes());
         return;
     }
@@ -82,7 +95,7 @@ fn handle_connection<D: ToolDispatcher>(mut client: TcpStream, dispatcher: &D) {
     let mut iterations = 0;
     loop {
         let upstream_body = payload.to_string();
-        let response_body = match forward_json(&upstream_body) {
+        let response_body = match forward_json(upstream, &upstream_body) {
             Ok(r) => r,
             Err(e) => {
                 let _ = client.write_all(error_response(&e).as_bytes());
@@ -189,13 +202,13 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String, String, Strin
 }
 
 /// Forward a JSON body to the upstream llama-server. Returns the response body.
-fn forward_json(body: &str) -> Result<String, String> {
+fn forward_json(upstream: &str, body: &str) -> Result<String, String> {
     use std::time::Duration;
-    let mut stream = TcpStream::connect_timeout(
-        &UPSTREAM_ADDR.parse().unwrap(),
-        Duration::from_secs(5),
-    )
-    .map_err(|e| format!("upstream connect failed: {e}"))?;
+    let target = upstream
+        .parse()
+        .map_err(|e| format!("bad upstream address {upstream}: {e}"))?;
+    let mut stream = TcpStream::connect_timeout(&target, Duration::from_secs(5))
+        .map_err(|e| format!("upstream connect failed: {e}"))?;
 
     let req = format!(
         "POST /v1/chat/completions HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -216,12 +229,13 @@ fn forward_json(body: &str) -> Result<String, String> {
 }
 
 /// Forward an arbitrary request to upstream unchanged and return the raw response.
-fn forward_raw(method: &str, path: &str, headers: &str, body: &str) -> String {
+fn forward_raw(upstream: &str, method: &str, path: &str, headers: &str, body: &str) -> String {
     use std::time::Duration;
-    let mut stream = match TcpStream::connect_timeout(
-        &UPSTREAM_ADDR.parse().unwrap(),
-        Duration::from_secs(5),
-    ) {
+    let target = match upstream.parse() {
+        Ok(t) => t,
+        Err(_) => return bad_gateway(),
+    };
+    let mut stream = match TcpStream::connect_timeout(&target, Duration::from_secs(5)) {
         Ok(s) => s,
         Err(_) => return bad_gateway(),
     };
