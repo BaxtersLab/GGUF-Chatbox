@@ -81,8 +81,13 @@ pub fn auto_scale_echo(echo_source: &EchoSource, ctx_size: usize) -> String {
     if full.len() <= max_chars {
         full
     } else {
-        // Truncate at a word boundary where possible.
-        let truncated = &full[..max_chars];
+        // Truncate at a word boundary where possible — but never inside a
+        // multi-byte UTF-8 character (slicing at a raw byte index panics).
+        let mut cut = max_chars;
+        while !full.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let truncated = &full[..cut];
         match truncated.rfind(' ') {
             Some(pos) if pos > max_chars / 2 => truncated[..pos].to_string(),
             _ => truncated.to_string(),
