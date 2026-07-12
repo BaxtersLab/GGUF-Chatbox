@@ -295,10 +295,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 /* Server tray pop-out panel */
 .server-tray {
   position: fixed;
-  top: 0;
+  top: 40px;                     /* below the 40px title bar so the tray × never sits under the window ✕ (accidental-close hazard fix) */
   right: var(--tab-strip-width);
   width: 300px;
-  height: 100vh;
+  height: calc(100vh - 40px);
   background: var(--tray-bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -593,10 +593,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 .settings-tray {
   position: fixed;
-  top: 0;
+  top: 40px;                     /* below the title bar — avoids the accidental-close hazard */
   right: var(--tab-strip-width);
   width: 280px;
-  height: 100vh;
+  height: calc(100vh - 40px);
   background: var(--tray-bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -965,3 +965,48 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: 10px;
 }
 
+
+/* ── CD-Changer Magazine loader (3 slots now; scales to N — see MAG_SIZE in main.js) ── */
+.mag-header { display: flex; align-items: center; gap: 10px; }
+.mag-title  { font-size: 13px; font-weight: 600; color: var(--text); }
+.mag-hint   { flex: 1; font-size: 11px; color: var(--text-dim); }
+.magazine-slots {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 56vh; overflow-y: auto;      /* 3 slots fit; 10 would scroll */
+  padding-right: 2px;
+}
+.mag-slot {
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--input-bg); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.mag-slot.loaded { border-color: #14b8a6; box-shadow: 0 0 6px rgba(20,184,166,0.35); }
+.mag-slot-head { display: flex; align-items: center; gap: 8px; }
+.mag-dot { font-size: 12px; color: #666; }
+.mag-slot.loaded .mag-dot { color: #4ade80; }
+.mag-slot-name { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--text); }
+.mag-slot-status { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+.mag-slot.loaded .mag-slot-status { color: #4ade80; }
+.mag-q { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.mag-row { display: flex; align-items: center; gap: 6px; }
+.mag-row input {
+  flex: 1; min-width: 0; background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 6px; font-size: 11px; font-family: monospace;
+}
+.mag-row .mag-browse {
+  font-size: 11px; padding: 3px 10px; white-space: nowrap;
+  background: #3a3a3a; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.mag-row .mag-browse:hover { background: #4a4a4a; color: var(--text); }
+.mag-row .mag-clear { font-size: 11px; padding: 3px 7px; opacity: 0.6; cursor: pointer;
+  background: transparent; color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; }
+.mag-row .mag-clear:hover { opacity: 1; color: var(--text); }
+.mag-load-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.mag-load-btn {
+  font-size: 12px; font-weight: 600; padding: 4px 14px; cursor: pointer;
+  background: var(--accent); color: #fff; border: none; border-radius: 4px;
+}
+.mag-load-btn:disabled { opacity: 0.45; cursor: default; }
+.mag-load-btn:hover:not(:disabled) { filter: brightness(1.15); }

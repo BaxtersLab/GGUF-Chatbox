@@ -194,6 +194,10 @@ struct AppSettings {
     use_main_for_vision: bool,
     #[serde(default)]
     use_main_for_audio: bool,
+    /// CD-changer magazine: the model-loader's disks (index = slot). SOC reads
+    /// this from settings.json as the swap disk registry. Scales to N slots.
+    #[serde(default)]
+    magazine: Vec<MagazineDisk>,
 }
 
 fn default_silence_timeout() -> u32 { 5 }
@@ -227,8 +231,21 @@ impl Default for AppSettings {
             auto_apply_card_params: true,
             use_main_for_vision: false,
             use_main_for_audio: false,
+            magazine: Vec::new(),
         }
     }
+}
+
+/// One CD-changer disk: a model (+ optional mmproj) the loader can load and SOC
+/// can swap to. The `magazine` array (in AppSettings) is the ordered slot list.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct MagazineDisk {
+    #[serde(default)]
+    model_path: String,
+    #[serde(default)]
+    mmproj_path: String,
+    #[serde(default)]
+    label: String,
 }
 
 fn settings_path() -> std::path::PathBuf {
@@ -827,6 +844,7 @@ fn cmd_update_settings(
     listening_model_path: Option<String>,
     use_main_for_vision: Option<bool>,
     use_main_for_audio: Option<bool>,
+    magazine: Option<Vec<MagazineDisk>>,
     state: State<Mutex<AppState>>,
 ) -> Result<(), String> {
     let mut settings = cmd_get_settings();
@@ -850,6 +868,7 @@ fn cmd_update_settings(
     if let Some(p) = listening_model_path { settings.listening_model_path = p; }
     if let Some(v) = use_main_for_vision { settings.use_main_for_vision = v; }
     if let Some(v) = use_main_for_audio { settings.use_main_for_audio = v; }
+    if let Some(m) = magazine { settings.magazine = m; }
     let path = settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -924,6 +943,14 @@ fn cmd_start_server(state: State<Mutex<AppState>>) -> Result<(), String> {
     std::thread::spawn(|| {
         let dispatcher = RegistryDispatcher(default_registry());
         server::start_proxy(dispatcher);
+    });
+
+    // Additive CD-changer swap-control listener on :8086 (proxy :8080 and
+    // llama-server :8081 left untouched). Lets an external orchestrator (SOC
+    // Ultralight) POST /swap to load a different model, reusing start_server.
+    // Safe to call repeatedly: a second bind on :8086 fails harmlessly + returns.
+    std::thread::spawn(|| {
+        server::start_control_server();
     });
 
     // Now start the model server. If the proxy bind fails, it will fail
@@ -1516,6 +1543,20 @@ fn cmd_browse_main_mmproj() -> Result<String, String> {
     let file = rfd::FileDialog::new()
         .set_title("Select mmproj for Main Server (.gguf)")
         .add_filter("GGUF mmproj", &["gguf"])
+        .pick_file();
+    match file {
+        Some(path) => Ok(path.to_string_lossy().into_owned()),
+        None => Err("cancelled".to_string()),
+    }
+}
+
+/// Generic .gguf file picker with a caller-supplied dialog title. Used by the
+/// CD-changer magazine loader (per-slot model + mmproj browse).
+#[tauri::command]
+fn cmd_browse_gguf_file(title: String) -> Result<String, String> {
+    let file = rfd::FileDialog::new()
+        .set_title(&title)
+        .add_filter("GGUF", &["gguf"])
         .pick_file();
     match file {
         Some(path) => Ok(path.to_string_lossy().into_owned()),
@@ -2741,6 +2782,7 @@ fn main() {
             cmd_launch_bsr,
             cmd_vision_action,
             cmd_browse_vision_model,
+            cmd_browse_gguf_file,
             cmd_browse_mmproj,
             cmd_browse_main_mmproj,
             cmd_start_vision_server,

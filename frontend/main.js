@@ -250,219 +250,184 @@ listen('chat-token', event => {
 try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[ui] frontend/main.js loaded' }).catch(()=>{}); } catch(e) {}
 
 (function () {
-  let models = [];
-  let selectedPath = null;
-  let modelFolder = '';
+  // ── CD-Changer Magazine loader ──────────────────────────────────────────
+  // Data-driven: MAG_SIZE slots, each = one "disk" {model_path, mmproj_path}.
+  // 3 disks now; scaling to 10 later is this ONE number (slots list scrolls).
+  // The magazine array persists in settings.json — SOC Ultralight reads it as
+  // the CD-changer disk registry for the :8086/swap control endpoint.
+  const MAG_SIZE = 3;
 
   const trayEl     = document.getElementById('model-tray');
   const btnToggle  = document.getElementById('btn-model-tray');
-  const folderPath = document.getElementById('model-folder-path');
-  const btnBrowse  = document.getElementById('btn-browse-folder');
-  const modelList  = document.getElementById('model-tray-list');
-  const btnLoad    = document.getElementById('btn-tray-load');
-  const btnEject   = document.getElementById('btn-tray-eject');
+  const slotsEl    = document.getElementById('magazine-slots');
+  const btnEject   = document.getElementById('btn-mag-eject');
   const statusEl   = document.getElementById('model-tray-status');
   const indicator  = document.getElementById('model-indicator');
   const modelLabel = document.getElementById('chat-model-label');
   const warningEl  = document.getElementById('no-model-warning');
-  let modelLoaded  = false;
 
-  function openTray()  { trayEl.style.display = 'flex'; }
+  let magazine    = [];    // [{model_path, mmproj_path, label}] — the disks
+  let loadedSlot  = -1;    // index of the currently-loaded disk (-1 = none)
+  let modelLoaded = false;
+
+  function openTray()  { trayEl.style.display = 'flex'; refreshFromSettings(); }
   function closeTray() { trayEl.style.display = 'none'; }
+  window.ModelTray = { openTray, closeTray };
 
   btnToggle.addEventListener('click', () => {
-    try { console.log('[ui] settings toggle clicked'); invoke('cmd_log', { line: '[ui] settings toggle clicked' }).catch(()=>{}); } catch(e) {}
     trayEl.style.display === 'none' ? openTray() : closeTray();
   });
 
-  // Browse for folder
-  btnBrowse.addEventListener('click', async () => {
-    try {
-      const path = await invoke('cmd_browse_model_folder');
-      folderPath.value = path;
-      modelFolder = path;
-      scanFolder(path);
-    } catch (e) {
-      if (e !== 'cancelled') statusEl.textContent = 'Error: ' + e;
-    }
-  });
+  function baseName(p) { return (p || '').replace(/\\/g, '/').split('/').pop(); }
+  function normPath(p) { return (p || '').replace(/\\/g, '/').toLowerCase(); }
 
-  async function scanFolder(path) {
-    statusEl.textContent = 'Scanning…';
-    try {
-      models = await invoke('cmd_scan_model_folder', { path });
-      renderModelList();
-      var totalFiles = models.reduce(function (sum, sub) { return sum + sub.gguf_files.length; }, 0);
-      statusEl.textContent = totalFiles > 0
-        ? models.length + ' folder(s), ' + totalFiles + ' model(s) found.'
-        : 'No model subfolders with .gguf files found.';
-      // Save folder to settings
-      invoke('cmd_update_settings', { modelsFolder: path }).catch(() => {});
-    } catch (e) {
-      statusEl.textContent = 'Error: ' + e;
-    }
+  function normalizeMagazine(m) {
+    const mag = Array.isArray(m) ? m.slice(0, MAG_SIZE) : [];
+    while (mag.length < MAG_SIZE) mag.push({ model_path: '', mmproj_path: '', label: '' });
+    return mag.map(d => ({
+      model_path:  (d && d.model_path)  || '',
+      mmproj_path: (d && d.mmproj_path) || '',
+      label:       (d && d.label)       || ''
+    }));
   }
 
-  function renderModelList() {
-    var totalFiles = models.reduce(function (sum, sub) { return sum + sub.gguf_files.length; }, 0);
-    if (totalFiles === 0) {
-      modelList.innerHTML = '<p class="model-tray-empty">No model subfolders with .gguf files found.</p>';
-      btnLoad.disabled = true;
-      return;
-    }
-    modelList.innerHTML = '';
-    models.forEach(function (sub) {
-      var header = document.createElement('div');
-      header.className = 'model-tray-subfolder';
-      header.textContent = '\uD83D\uDCC1 ' + sub.name + ' (' + sub.gguf_files.length + ')';
-      modelList.appendChild(header);
-      sub.gguf_files.forEach(function (m) {
-        var name = m.path.replace(/\\/g, '/').split('/').pop();
-        var div = document.createElement('div');
-        div.className = 'model-tray-item';
-        div.innerHTML = escHtml(name) +
-          ' <span class="model-tray-item-meta">' + m.size_mb + ' MB \u00b7 ctx ' + m.context_length + ' \u00b7 ' + m.layers + ' layers</span>';
-        div.addEventListener('click', function () { selectModel(m, div); });
-        modelList.appendChild(div);
-      });
+  function persist() {
+    invoke('cmd_update_settings', { magazine }).catch(() => {});
+  }
+
+  function slotOfPath(path) {
+    const n = normPath(path);
+    return magazine.findIndex(d => d.model_path && normPath(d.model_path) === n);
+  }
+
+  function applyLoadedMeta(meta) {
+    modelLabel.textContent = baseName(meta.path) + '  ·  ctx ' + meta.context_length + '  ·  ' + meta.gpu_layers + ' GPU layers';
+    indicator.className = 'model-indicator on';
+    indicator.title = 'Model loaded';
+    warningEl.classList.add('hidden');
+    modelLoaded = true;
+    btnEject.disabled = false;
+    loadedSlot = slotOfPath(meta.path);
+  }
+
+  // ── Slot rendering ─────────────────────────────────────────────────────────
+  function renderSlots() {
+    slotsEl.innerHTML = '';
+    magazine.forEach((disk, i) => slotsEl.appendChild(buildSlot(disk, i)));
+  }
+
+  function buildSlot(disk, i) {
+    const el = document.createElement('div');
+    el.className = 'mag-slot' + (i === loadedSlot ? ' loaded' : '');
+
+    const head = document.createElement('div');
+    head.className = 'mag-slot-head';
+    head.innerHTML =
+      '<span class="mag-dot">●</span>' +
+      '<span class="mag-slot-name">MODEL ' + (i + 1) + '</span>' +
+      '<span class="mag-slot-status">' + (i === loadedSlot ? '● loaded' : (disk.model_path ? 'ready' : 'empty')) + '</span>';
+    el.appendChild(head);
+
+    // Model file row
+    const q1 = document.createElement('div');
+    q1.className = 'mag-q';
+    q1.textContent = 'Select the model here →';
+    el.appendChild(q1);
+    const row1 = document.createElement('div');
+    row1.className = 'mag-row';
+    const inp1 = document.createElement('input');
+    inp1.readOnly = true;
+    inp1.placeholder = 'no model selected';
+    inp1.value = disk.model_path;
+    inp1.title = disk.model_path;
+    const b1 = document.createElement('button');
+    b1.className = 'mag-browse';
+    b1.textContent = 'Browse';
+    b1.addEventListener('click', async () => {
+      try {
+        const p = await invoke('cmd_browse_gguf_file', { title: 'Select Model for MODEL ' + (i + 1) + ' (.gguf)' });
+        magazine[i].model_path = p;
+        persist(); renderSlots();
+      } catch (e) { if (e !== 'cancelled') statusEl.textContent = 'Browse error: ' + e; }
     });
+    row1.appendChild(inp1); row1.appendChild(b1);
+    el.appendChild(row1);
+
+    // mmproj row
+    const q2 = document.createElement('div');
+    q2.className = 'mag-q';
+    q2.textContent = 'Does this model have an mmproj? If so, select it here →';
+    el.appendChild(q2);
+    const row2 = document.createElement('div');
+    row2.className = 'mag-row';
+    const inp2 = document.createElement('input');
+    inp2.readOnly = true;
+    inp2.placeholder = '(none — text-only model)';
+    inp2.value = disk.mmproj_path;
+    inp2.title = disk.mmproj_path;
+    const b2 = document.createElement('button');
+    b2.className = 'mag-browse';
+    b2.textContent = 'Browse';
+    b2.addEventListener('click', async () => {
+      try {
+        const p = await invoke('cmd_browse_gguf_file', { title: 'Select mmproj for MODEL ' + (i + 1) + ' (.gguf)' });
+        magazine[i].mmproj_path = p;
+        persist(); renderSlots();
+      } catch (e) { if (e !== 'cancelled') statusEl.textContent = 'Browse error: ' + e; }
+    });
+    const b2c = document.createElement('button');
+    b2c.className = 'mag-clear';
+    b2c.title = 'Clear mmproj';
+    b2c.textContent = '✕';
+    b2c.addEventListener('click', () => {
+      magazine[i].mmproj_path = '';
+      persist(); renderSlots();
+    });
+    row2.appendChild(inp2); row2.appendChild(b2); row2.appendChild(b2c);
+    el.appendChild(row2);
+
+    // Load row
+    const q3 = document.createElement('div');
+    q3.className = 'mag-q';
+    q3.textContent = 'When model + mmproj (if any) are selected, click here →';
+    el.appendChild(q3);
+    const row3 = document.createElement('div');
+    row3.className = 'mag-load-row';
+    const bl = document.createElement('button');
+    bl.className = 'mag-load-btn';
+    bl.textContent = '▶ Load Model';
+    bl.disabled = !disk.model_path;
+    bl.addEventListener('click', () => loadSlot(i));
+    row3.appendChild(bl);
+    el.appendChild(row3);
+
+    return el;
   }
 
-  function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
-
-  function selectModel(m, el) {
-    document.querySelectorAll('.model-tray-item').forEach(d => d.classList.remove('selected'));
-    el.classList.add('selected');
-    selectedPath = m.path;
-    btnLoad.disabled = false;
-  }
-
-  btnLoad.addEventListener('click', async () => {
-    if (!selectedPath) return;
-    statusEl.textContent = 'Loading model…';
-    btnLoad.disabled = true;
+  // ── Load / eject ──────────────────────────────────────────────────────────
+  async function loadSlot(i) {
+    const disk = magazine[i];
+    if (!disk || !disk.model_path) return;
+    statusEl.textContent = 'Loading MODEL ' + (i + 1) + '…';
     trayEl.classList.add('loading');
     try {
-      const meta = await invoke('cmd_load_model', { path: selectedPath });
-      const name = meta.path.replace(/\\/g, '/').split('/').pop();
-      modelLabel.textContent = name + '  \u00b7  ctx ' + meta.context_length + '  \u00b7  ' + meta.gpu_layers + ' GPU layers';
-      indicator.className = 'model-indicator on';
-      indicator.title = 'Model loaded';
-      warningEl.classList.add('hidden');
-      modelLoaded = true;
-      btnEject.disabled = false;
-      closeTray();
+      // Persist this disk's mmproj as the main mmproj BEFORE loading, so the
+      // server / use-main-for-vision attach the right projector for this disk.
+      await invoke('cmd_update_settings', { mainMmprojPath: disk.mmproj_path || '' }).catch(() => {});
+      const meta = await invoke('cmd_load_model', { path: disk.model_path });
+      applyLoadedMeta(meta);
       statusEl.textContent = '';
-      // Persist model selection + gpu_layers
       invoke('cmd_update_settings', { lastModelPath: meta.path, lastGpuLayers: meta.gpu_layers }).catch(() => {});
-      // Notify Hardware slot of loaded model
       if (window.HardwareSlot) window.HardwareSlot.onModelLoaded(meta);
+      renderSlots();
+      closeTray();
     } catch (e) {
       statusEl.textContent = 'Load failed: ' + e;
     } finally {
       trayEl.classList.remove('loading');
-      btnLoad.disabled = false;
     }
-  });
-
-  // Auto-load saved folder on startup
-  invoke('cmd_get_settings').then(s => {
-    if (s.models_folder) {
-      folderPath.value = s.models_folder;
-      modelFolder = s.models_folder;
-      scanFolder(s.models_folder);
-    } else {
-      // Try default folder
-      invoke('cmd_list_models').then(defaultModels => {
-        if (defaultModels.length > 0) {
-          models = defaultModels;
-          renderModelList();
-          statusEl.textContent = defaultModels.length + ' model(s) in default folder.';
-        }
-      }).catch(() => {});
-    }
-    // Auto-load last used model if saved
-    if (s.last_model_path) {
-      var savedGpu = (s.last_gpu_layers != null) ? s.last_gpu_layers : null;
-      statusEl.textContent = 'Restoring last model\u2026';
-      invoke('cmd_load_model', { path: s.last_model_path }).then(function (meta) {
-        var name = meta.path.replace(/\\\\/g, '/').split('/').pop();
-        // If user had saved gpu_layers that differ from auto, reload with their setting
-        if (savedGpu != null && savedGpu !== meta.gpu_layers) {
-          invoke('cmd_reload_gpu_layers', { gpuLayers: savedGpu }).then(function (meta2) {
-            var n2 = meta2.path.replace(/\\\\/g, '/').split('/').pop();
-            modelLabel.textContent = n2 + '  \u00b7  ctx ' + meta2.context_length + '  \u00b7  ' + meta2.gpu_layers + ' GPU layers';
-            indicator.className = 'model-indicator on';
-            indicator.title = 'Model loaded';
-            warningEl.classList.add('hidden');
-            modelLoaded = true;
-            btnEject.disabled = false;
-            statusEl.textContent = '';
-            // Notify hardware slot WITHOUT triggering warning (user already chose this)
-            if (window.HardwareSlot) window.HardwareSlot.onModelRestored(meta2);
-          }).catch(function () {
-            // gpu reload failed, keep the auto-loaded version
-            modelLabel.textContent = name + '  \u00b7  ctx ' + meta.context_length + '  \u00b7  ' + meta.gpu_layers + ' GPU layers';
-            indicator.className = 'model-indicator on';
-            indicator.title = 'Model loaded';
-            warningEl.classList.add('hidden');
-            modelLoaded = true;
-            btnEject.disabled = false;
-            statusEl.textContent = '';
-            if (window.HardwareSlot) window.HardwareSlot.onModelRestored(meta);
-          });
-        } else {
-          modelLabel.textContent = name + '  \u00b7  ctx ' + meta.context_length + '  \u00b7  ' + meta.gpu_layers + ' GPU layers';
-          indicator.className = 'model-indicator on';
-          indicator.title = 'Model loaded';
-          warningEl.classList.add('hidden');
-          modelLoaded = true;
-          btnEject.disabled = false;
-          statusEl.textContent = '';
-          if (window.HardwareSlot) window.HardwareSlot.onModelRestored(meta);
-        }
-      }).catch(function (err) {
-        statusEl.textContent = 'Auto-load failed: ' + err;
-      });
-    }
-  }).catch(() => {});
-
-  // ── mmproj field ─────────────────────────────────────────────────────────
-  const trayMmprojInput  = document.getElementById('tray-mmproj');
-  const btnTrayBrowseMmp = document.getElementById('btn-tray-browse-mmproj');
-  const btnTrayClearMmp  = document.getElementById('btn-tray-clear-mmproj');
-
-  // Load saved main_mmproj_path whenever the model tray opens.
-  const _origModelOpen = openTray;
-  openTray = function () {
-    _origModelOpen();
-    invoke('cmd_get_settings').then(s => {
-      if (trayMmprojInput) trayMmprojInput.value = s.main_mmproj_path || '';
-    }).catch(() => {});
-  };
-
-  if (btnTrayBrowseMmp) {
-    btnTrayBrowseMmp.addEventListener('click', async () => {
-      try {
-        const p = await invoke('cmd_browse_main_mmproj');
-        trayMmprojInput.value = p;
-        await invoke('cmd_update_settings', { mainMmprojPath: p });
-      } catch (e) { if (e !== 'cancelled') statusEl.textContent = 'mmproj error: ' + e; }
-    });
   }
 
-  if (btnTrayClearMmp) {
-    btnTrayClearMmp.addEventListener('click', async () => {
-      trayMmprojInput.value = '';
-      await invoke('cmd_update_settings', { mainMmprojPath: '' }).catch(() => {});
-    });
-  }
-
-  window.ModelTray = { openTray, closeTray };
-
-  // Eject button
   btnEject.addEventListener('click', async () => {
     try { await invoke('cmd_unload_model'); } catch (_) {}
     document.getElementById('messages').innerHTML = '';
@@ -472,11 +437,64 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     warningEl.classList.remove('hidden');
     modelLoaded = false;
     btnEject.disabled = true;
+    loadedSlot = -1;
     statusEl.textContent = 'Model ejected.';
     if (window.HardwareSlot) window.HardwareSlot.onModelEjected();
-    // Clear persisted model so it won't auto-load next launch
     invoke('cmd_update_settings', { lastModelPath: '' }).catch(() => {});
+    renderSlots();
   });
+
+  // ── Settings sync + startup restore ───────────────────────────────────────
+  function seedFromLegacy(s) {
+    // Migration: if the magazine is empty but a single model was configured the
+    // old way, seed MODEL 1 with it so the current setup appears automatically.
+    if (!magazine.some(d => d.model_path) && s.last_model_path) {
+      magazine[0] = { model_path: s.last_model_path, mmproj_path: s.main_mmproj_path || '', label: '' };
+      persist();
+    }
+  }
+
+  function refreshFromSettings() {
+    invoke('cmd_get_settings').then(s => {
+      magazine = normalizeMagazine(s.magazine);
+      seedFromLegacy(s);
+      renderSlots();
+    }).catch(() => {});
+  }
+
+  invoke('cmd_get_settings').then(s => {
+    magazine = normalizeMagazine(s.magazine);
+    seedFromLegacy(s);
+    renderSlots();
+
+    // Auto-restore the last model on startup (same behavior as before).
+    if (s.last_model_path) {
+      const savedGpu = (s.last_gpu_layers != null) ? s.last_gpu_layers : null;
+      statusEl.textContent = 'Restoring last model…';
+      invoke('cmd_load_model', { path: s.last_model_path }).then(meta => {
+        if (savedGpu != null && savedGpu !== meta.gpu_layers) {
+          invoke('cmd_reload_gpu_layers', { gpuLayers: savedGpu }).then(meta2 => {
+            applyLoadedMeta(meta2);
+            statusEl.textContent = '';
+            if (window.HardwareSlot) window.HardwareSlot.onModelRestored(meta2);
+            renderSlots();
+          }).catch(() => {
+            applyLoadedMeta(meta);
+            statusEl.textContent = '';
+            if (window.HardwareSlot) window.HardwareSlot.onModelRestored(meta);
+            renderSlots();
+          });
+        } else {
+          applyLoadedMeta(meta);
+          statusEl.textContent = '';
+          if (window.HardwareSlot) window.HardwareSlot.onModelRestored(meta);
+          renderSlots();
+        }
+      }).catch(err => {
+        statusEl.textContent = 'Auto-load failed: ' + err;
+      });
+    }
+  }).catch(() => {});
 })();
 
 // ── Chat input / buttons ──────────────────────────────────────────────────
@@ -501,8 +519,10 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     ChatEngine.stopGeneration();
   });
 
-  // Advanced Settings button — opens standalone window
-  const advBtn = document.getElementById('btn-advanced');
+  // Advanced Settings button — opens standalone window. It now lives INSIDE the
+  // ⚙ Settings tray (menus consolidated; the ⚙+ top-bar button was removed in
+  // the accidental-close reorg).
+  const advBtn = document.getElementById('btn-open-advanced');
   if (advBtn) {
     advBtn.addEventListener('click', () => {
       invoke('cmd_show_advanced_settings').catch(() => {});

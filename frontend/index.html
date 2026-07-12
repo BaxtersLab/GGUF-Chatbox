@@ -61,31 +61,20 @@
           SERVER
         </button>
         <button id="btn-settings" title="Settings">&#x2699;</button>
-        <button id="btn-advanced" title="Advanced Settings">&#x2699;+</button>
         <div class="window-controls">
           <button id="btn-win-minimize" class="win-ctrl-btn" title="Minimize">&#x2500;</button>
           <button id="btn-win-close" class="win-ctrl-btn win-close" title="Close">&#x2715;</button>
         </div>
       </div>
 
-      <!-- Model loader tray -->
+      <!-- Model loader — CD-Changer Magazine (data-driven; 3 slots now, scales to N via MAG_SIZE) -->
       <div id="model-tray" class="model-tray" style="display:none">
-        <div class="model-tray-row">
-          <input type="text" id="model-folder-path" class="model-folder-path" placeholder="Select a models folder…" readonly />
-          <button id="btn-browse-folder" class="model-tray-btn">Browse</button>
+        <div class="mag-header">
+          <span class="mag-title">&#x1F4C0; CD-Changer Magazine</span>
+          <span class="mag-hint">load up to 3 models &middot; SOC swaps between them</span>
+          <button id="btn-mag-eject" class="model-tray-eject" title="Unload current model">&#x23CF; Eject</button>
         </div>
-        <div id="model-tray-list" class="model-tray-list">
-          <p class="model-tray-empty">Browse to a folder containing model subfolders.</p>
-        </div>
-        <div class="model-tray-actions">
-          <button id="btn-tray-load" disabled>Load Model</button>
-          <button id="btn-tray-eject" class="model-tray-eject" disabled title="Eject current model">&#x23CF; Eject</button>
-        </div>
-        <div class="model-tray-mmproj-row">
-          <input type="text" id="tray-mmproj" readonly placeholder="mmproj .gguf — required for Phi-4 / vision models" />
-          <button id="btn-tray-browse-mmproj">mmproj…</button>
-          <button id="btn-tray-clear-mmproj" title="Clear mmproj" style="opacity:0.6;">✕</button>
-        </div>
+        <div id="magazine-slots" class="magazine-slots"><!-- JS renders one .mag-slot per disk --></div>
         <div id="model-tray-status" class="model-tray-status"></div>
       </div>
 
@@ -200,6 +189,9 @@
           <div id="stg-max-ctx-warn" style="font-size:12px;color:var(--text-dim);min-height:18px;margin-top:6px;">Auto chooses the best context based on model & hardware.</div>
           <button id="btn-stg-save" class="stg-save-btn">Save Settings</button>
           <div id="stg-status" class="stg-status"></div>
+          <hr class="stg-sep" />
+          <div class="stg-section-label">Advanced</div>
+          <button id="btn-open-advanced" class="stg-save-btn" title="Open the Advanced Settings window">&#x2699;+ Advanced Settings&hellip;</button>
         </div>
       </div>
 
