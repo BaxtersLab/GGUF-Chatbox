@@ -164,10 +164,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 /* CWL4 pop-out panels */
 .cwl4-panel {
   position: fixed;
-  top: 0;
+  top: 40px;                     /* below the title bar — consistent with all pop-out trays */
   left: var(--tab-strip-width);
   width: 280px;
-  height: 100vh;
+  height: calc(100vh - 40px);
   background: var(--tray-bg);
   border-right: 1px solid var(--border);
   display: flex;
@@ -502,10 +502,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 .exp-tray {
   position: fixed;
-  top: 0;
+  top: 40px;                     /* below the 40px title bar — expansion-tray × must never sit under the window ✕ (accidental-close hazard) */
   right: var(--tab-strip-width);
   width: var(--tray-width);
-  height: 100vh;
+  height: calc(100vh - 40px);
   background: var(--tray-bg);
   border-left: 1px solid var(--border);
   display: flex;
