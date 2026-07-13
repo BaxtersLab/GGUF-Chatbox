@@ -269,6 +269,7 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   let magazine    = [];    // [{model_path, mmproj_path, label}] — the disks
   let loadedSlot  = -1;    // index of the currently-loaded disk (-1 = none)
   let modelLoaded = false;
+  let standalone  = true;  // classic single-model mode: slots 2+ greyed out
 
   function openTray()  { trayEl.style.display = 'flex'; refreshFromSettings(); }
   function closeTray() { trayEl.style.display = 'none'; }
@@ -277,6 +278,16 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   btnToggle.addEventListener('click', () => {
     trayEl.style.display === 'none' ? openTray() : closeTray();
   });
+
+  // Standalone toggle: classic single-model behavior; persists in settings.
+  const chkStandalone = document.getElementById('chk-standalone');
+  if (chkStandalone) {
+    chkStandalone.addEventListener('change', () => {
+      standalone = chkStandalone.checked;
+      invoke('cmd_update_settings', { standaloneMode: standalone }).catch(() => {});
+      renderSlots();
+    });
+  }
 
   function baseName(p) { return (p || '').replace(/\\/g, '/').split('/').pop(); }
   function normPath(p) { return (p || '').replace(/\\/g, '/').toLowerCase(); }
@@ -314,11 +325,21 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   function renderSlots() {
     slotsEl.innerHTML = '';
     magazine.forEach((disk, i) => slotsEl.appendChild(buildSlot(disk, i)));
+    const chk = document.getElementById('chk-standalone');
+    if (chk) chk.checked = standalone;
+    const hint = document.getElementById('mag-hint');
+    if (hint) hint.textContent = standalone
+      ? 'single model · classic mode (slots 2–3 off)'
+      : 'load up to 3 models · SOC swaps between them';
   }
 
   function buildSlot(disk, i) {
+    // Standalone (classic single-model) mode: only MODEL 1 is usable — no
+    // CD-changer orchestrator means multi-disk loading would just mislead.
+    const off = standalone && i > 0;
     const el = document.createElement('div');
-    el.className = 'mag-slot' + (i === loadedSlot ? ' loaded' : '');
+    el.className = 'mag-slot' + (i === loadedSlot ? ' loaded' : '')
+                              + (off ? ' mag-off' : '');
 
     const head = document.createElement('div');
     head.className = 'mag-slot-head';
@@ -401,6 +422,9 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     row3.appendChild(bl);
     el.appendChild(row3);
 
+    if (off) {
+      el.querySelectorAll('button, input').forEach(c => { c.disabled = true; });
+    }
     return el;
   }
 
@@ -457,6 +481,7 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   function refreshFromSettings() {
     invoke('cmd_get_settings').then(s => {
       magazine = normalizeMagazine(s.magazine);
+      standalone = (s.standalone_mode !== false);
       seedFromLegacy(s);
       renderSlots();
     }).catch(() => {});
@@ -464,6 +489,7 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
 
   invoke('cmd_get_settings').then(s => {
     magazine = normalizeMagazine(s.magazine);
+    standalone = (s.standalone_mode !== false);
     seedFromLegacy(s);
     renderSlots();
 

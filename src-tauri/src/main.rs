@@ -198,7 +198,15 @@ struct AppSettings {
     /// this from settings.json as the swap disk registry. Scales to N slots.
     #[serde(default)]
     magazine: Vec<MagazineDisk>,
+    /// Standalone mode (DEFAULT TRUE — the classic single-model + vision/audio
+    /// expansion behavior). Greys magazine slots 2+ so a user without an
+    /// external CD-changer orchestrator can't half-load a multi-disk setup.
+    /// Orchestrated compositions (SOC) uncheck it once; persisted.
+    #[serde(default = "default_standalone")]
+    standalone_mode: bool,
 }
+
+fn default_standalone() -> bool { true }
 
 fn default_silence_timeout() -> u32 { 5 }
 
@@ -232,6 +240,7 @@ impl Default for AppSettings {
             use_main_for_vision: false,
             use_main_for_audio: false,
             magazine: Vec::new(),
+            standalone_mode: true,
         }
     }
 }
@@ -857,6 +866,7 @@ fn cmd_update_settings(
     use_main_for_vision: Option<bool>,
     use_main_for_audio: Option<bool>,
     magazine: Option<Vec<MagazineDisk>>,
+    standalone_mode: Option<bool>,
     state: State<Mutex<AppState>>,
 ) -> Result<(), String> {
     let mut settings = cmd_get_settings();
@@ -881,6 +891,7 @@ fn cmd_update_settings(
     if let Some(v) = use_main_for_vision { settings.use_main_for_vision = v; }
     if let Some(v) = use_main_for_audio { settings.use_main_for_audio = v; }
     if let Some(m) = magazine { settings.magazine = m; }
+    if let Some(v) = standalone_mode { settings.standalone_mode = v; }
     let path = settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;

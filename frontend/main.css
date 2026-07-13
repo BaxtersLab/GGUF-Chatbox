@@ -1010,3 +1010,9 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .mag-load-btn:disabled { opacity: 0.45; cursor: default; }
 .mag-load-btn:hover:not(:disabled) { filter: brightness(1.15); }
+
+/* Standalone mode: slots 2-3 disabled (classic single-model behavior) */
+.mag-slot.mag-off { opacity: 0.35; pointer-events: none; }
+.mag-standalone { display: flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+.mag-standalone input { cursor: pointer; }

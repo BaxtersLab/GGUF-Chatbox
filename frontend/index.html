@@ -72,7 +72,10 @@
       <div id="model-tray" class="model-tray" style="display:none">
         <div class="mag-header">
           <span class="mag-title">&#x1F4C0; CD-Changer Magazine</span>
-          <span class="mag-hint">load up to 3 models &middot; SOC swaps between them</span>
+          <span class="mag-hint" id="mag-hint">load up to 3 models &middot; SOC swaps between them</span>
+          <label class="mag-standalone" title="Classic single-model mode: slots 2-3 disabled (no CD-changer orchestrator)">
+            <input type="checkbox" id="chk-standalone" checked /> Standalone
+          </label>
           <button id="btn-mag-eject" class="model-tray-eject" title="Unload current model">&#x23CF; Eject</button>
         </div>
         <div id="magazine-slots" class="magazine-slots"><!-- JS renders one .mag-slot per disk --></div>
