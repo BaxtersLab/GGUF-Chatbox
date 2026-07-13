@@ -519,6 +519,16 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     ChatEngine.stopGeneration();
   });
 
+  // ↺ New Chat — clear history (backend + pane) without touching the model.
+  const newChatBtn = document.getElementById('btn-new-chat');
+  if (newChatBtn) {
+    newChatBtn.addEventListener('click', async () => {
+      try { await invoke('cmd_stop_generation'); } catch (_) {}
+      try { await invoke('cmd_clear_chat'); } catch (_) {}
+      document.getElementById('messages').innerHTML = '';
+    });
+  }
+
   // Advanced Settings button — opens standalone window. It now lives INSIDE the
   // ⚙ Settings tray (menus consolidated; the ⚙+ top-bar button was removed in
   // the accidental-close reorg).
@@ -540,6 +550,14 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   }
   if (btnClose && window.__TAURI__) {
     btnClose.addEventListener('click', async () => {
+      // Kill every child server BEFORE exiting — a bare process.exit orphans
+      // llama-server children, which then squat on ports 8081/8082/8083 and
+      // VRAM invisibly (the recurring "zombie server" plague). Best-effort,
+      // fast: each stop is a kill+wait on an already-tracked child.
+      for (const cmd of ['cmd_stop_vision_server', 'cmd_stop_server',
+                         'cmd_stop_listening_server']) {
+        try { await invoke(cmd); } catch (_) {}
+      }
       // Use process exit to guarantee app closes
       if (window.__TAURI__.process) {
         await window.__TAURI__.process.exit(0);

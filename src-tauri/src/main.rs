@@ -733,6 +733,18 @@ fn cmd_reload_gpu_layers(
     Ok(ModelMeta { path, context_length, layers, gpu_layers: clamped, size_mb })
 }
 
+/// Clear the chat: wipe the conversation history + per-session echo state
+/// WITHOUT touching the loaded model. Backend half of the "New Chat" button —
+/// keeps context lean and stops stale envelopes being re-read by orchestrators.
+#[tauri::command]
+fn cmd_clear_chat(state: State<Mutex<AppState>>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
+    guard.chat_history.clear();
+    guard.echo_fired.clear();
+    guard.echo_source = None;
+    Ok(())
+}
+
 #[tauri::command]
 fn cmd_get_model_stats(state: State<Mutex<AppState>>) -> Result<ModelStats, String> {
     let guard   = state.lock().map_err(|_| "state lock poisoned".to_string())?;
@@ -2783,6 +2795,7 @@ fn main() {
             cmd_vision_action,
             cmd_browse_vision_model,
             cmd_browse_gguf_file,
+            cmd_clear_chat,
             cmd_browse_mmproj,
             cmd_browse_main_mmproj,
             cmd_start_vision_server,
