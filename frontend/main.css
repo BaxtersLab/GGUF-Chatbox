@@ -161,6 +161,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 .cwl4-btn:hover { background: var(--input-bg); border-color: var(--border); color: var(--text); }
 .cwl4-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+/* ↺ New Chat lives in the left strip below S3 (NOT the title bar — the title
+   bar stays clear so a shrunken window always has grab room to drag). */
+.new-chat-btn { margin-top: 10px; font-size: 17px; }
+
 /* CWL4 pop-out panels */
 .cwl4-panel {
   position: fixed;
