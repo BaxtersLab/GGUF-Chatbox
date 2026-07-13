@@ -78,6 +78,9 @@ struct AppState {
     echo_enabled: bool,
     spawned_children: Vec<std::process::Child>,
     spawned_pids: Vec<u32>,
+    /// Cancel flag for server-routed chat (chat_via_server). Separate from
+    /// ModelInstance.cancel because server chat needs no loaded instance.
+    server_chat_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 // ── Serialisable types ────────────────────────────────────────────────────
@@ -204,6 +207,12 @@ struct AppSettings {
     /// Orchestrated compositions (SOC) uncheck it once; persisted.
     #[serde(default = "default_standalone")]
     standalone_mode: bool,
+    /// Route this window's chat through the local server (:8080) instead of the
+    /// in-app CLI path. ONE loaded brain then serves both hemispheres — the
+    /// HTTP agents AND this chat window — so a CD-changer swap changes the
+    /// chat's model too (without this, the swap only changes the server layer).
+    #[serde(default)]
+    chat_via_server: bool,
 }
 
 fn default_standalone() -> bool { true }
@@ -241,6 +250,7 @@ impl Default for AppSettings {
             use_main_for_audio: false,
             magazine: Vec::new(),
             standalone_mode: true,
+            chat_via_server: false,
         }
     }
 }
@@ -576,8 +586,10 @@ fn cmd_send_message(
     app: AppHandle,
     state: State<Mutex<AppState>>,
 ) -> Result<(), String> {
+    let via_server = cmd_get_settings().chat_via_server;
+
     // ── Prepare under lock ────────────────────────────────────────────────
-    let (instance_ptr, ctx_size, final_text) = {
+    let (instance_ptr, ctx_size, final_text, local_model, server_prep) = {
         let mut guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
 
         guard.chat_history.push(ChatMessage { role: "user".to_string(), content: text.clone() });
@@ -612,21 +624,50 @@ fn cmd_send_message(
             }
         }
 
-        let instance = guard.instance.as_mut().ok_or("no model loaded")?;
-        let ctx_size = instance.context_length;
+        if via_server {
+            // chat_via_server: the loaded brain lives in llama-server behind
+            // the proxy (:8080) — no local instance required. This is what
+            // lets ONE model serve the HTTP agents and this window alike.
+            let system = guard.system_prompt.clone();
+            let history: Vec<(String, String)> = guard.chat_history.iter()
+                .map(|m| (m.role.clone(), m.content.clone()))
+                .collect();
+            let messages = build_server_messages(&system, &history, &final_text);
+            let cancel = guard.server_chat_cancel.clone();
+            cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+            (None, 0u32, final_text, String::new(), Some((messages, cancel)))
+        } else {
+            let instance = guard.instance.as_mut().ok_or("no model loaded")?;
+            let ctx_size = instance.context_length;
+            let model_path = instance.config.model_path.to_string_lossy().into_owned();
 
-        // Step 2 & 3: Reset the cancel flag before each inference
-        instance.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+            // Step 2 & 3: Reset the cancel flag before each inference
+            instance.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
 
-        // SAFETY: We take a raw pointer to the instance so we can use it
-        // off-thread without holding the Mutex for the entire inference.
-        // The instance lives in the AppState behind an Arc-like Tauri State
-        // and is only removed by cmd_unload_model (which the user won't call
-        // while inference is running).  The Mutex is re-acquired at the end
-        // to append the assistant reply.
-        let ptr = SendPtr(instance as *mut ModelInstance);
-        (ptr, ctx_size, final_text)
+            // SAFETY: We take a raw pointer to the instance so we can use it
+            // off-thread without holding the Mutex for the entire inference.
+            // The instance lives in the AppState behind an Arc-like Tauri State
+            // and is only removed by cmd_unload_model (which the user won't call
+            // while inference is running).  The Mutex is re-acquired at the end
+            // to append the assistant reply.
+            let ptr = SendPtr(instance as *mut ModelInstance);
+            (Some(ptr), ctx_size, final_text, model_path, None)
+        }
     }; // lock released here
+
+    // Per-bubble attribution: tell the frontend which model is answering.
+    // Local mode knows immediately; server mode looks it up from the live
+    // server inside the worker thread (run_server_chat).
+    if !local_model.is_empty() {
+        let _ = app.emit("chat-model", serde_json::json!({"model": local_model, "via": "local"}));
+    }
+
+    if let Some((messages, cancel)) = server_prep {
+        let app_clone = app.clone();
+        std::thread::spawn(move || run_server_chat(app_clone, messages, cancel));
+        return Ok(());
+    }
+    let instance_ptr = instance_ptr.ok_or("internal: no instance pointer")?;
 
     let app_clone = app.clone();
 
@@ -700,6 +741,161 @@ fn cmd_send_message(
     });
 
     Ok(())
+}
+
+// ── Server-routed chat (chat_via_server) ─────────────────────────────────
+
+/// Build the OpenAI-style messages array for server-routed chat: optional
+/// system prompt + the full history, with the last (current) user message
+/// swapped for the echo-injected text actually sent to the model. Pure.
+fn build_server_messages(
+    system: &str,
+    history: &[(String, String)],
+    final_text: &str,
+) -> serde_json::Value {
+    let mut msgs: Vec<serde_json::Value> = Vec::new();
+    if !system.trim().is_empty() {
+        msgs.push(serde_json::json!({"role": "system", "content": system}));
+    }
+    for (i, (role, content)) in history.iter().enumerate() {
+        let c = if i + 1 == history.len() { final_text } else { content.as_str() };
+        msgs.push(serde_json::json!({"role": role, "content": c}));
+    }
+    serde_json::Value::Array(msgs)
+}
+
+/// Parse one SSE line from llama-server streaming ("data: {json}"). Returns
+/// None for keep-alives, blank lines and the "[DONE]" terminator. Pure.
+fn parse_sse_data(line: &str) -> Option<serde_json::Value> {
+    let rest = line.trim().strip_prefix("data:")?.trim();
+    if rest.is_empty() || rest == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str(rest).ok()
+}
+
+/// Extract the streamed token fragment from one SSE chunk. Pure.
+fn sse_delta_content(v: &serde_json::Value) -> Option<String> {
+    v.pointer("/choices/0/delta/content")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Ground truth for per-bubble attribution: which model the server is actually
+/// serving right now (proxy :8080 forwards /v1/models; llama.cpp answers with
+/// the full .gguf path). None if the server is down.
+fn server_loaded_model() -> Option<String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(3))
+        .build();
+    let resp = agent.get("http://127.0.0.1:8080/v1/models").call().ok()?;
+    let body = resp.into_string().ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v.pointer("/models/0/model")
+        .or_else(|| v.pointer("/models/0/name"))
+        .or_else(|| v.pointer("/data/0/id"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Worker for chat_via_server: stream /v1/chat/completions on the proxy and
+/// re-emit deltas as chat-token events. Tokens carry `"raw": true` so the
+/// frontend appends them verbatim (the CLI path is line-based and gets a
+/// newline per token; server deltas are mid-word fragments and must not).
+fn run_server_chat(
+    app: AppHandle,
+    messages: serde_json::Value,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::io::BufRead;
+
+    // Attribution FIRST, so the bubble is tagged while (slow, local) inference
+    // runs — the operator sees WHO is answering, not just that something is.
+    let mut model_emitted = false;
+    if let Some(m) = server_loaded_model() {
+        let _ = app.emit("chat-model", serde_json::json!({"model": m, "via": "server"}));
+        model_emitted = true;
+    }
+
+    let body = serde_json::json!({"messages": messages, "stream": true}).to_string();
+    // Connect timeout only — NO overall timeout: big FP models infer slowly
+    // and the stream must be allowed to take minutes (patient-wait rule).
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5))
+        .build();
+    let resp = agent
+        .post("http://127.0.0.1:8080/v1/chat/completions")
+        .set("Content-Type", "application/json")
+        .send_string(&body);
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = app.emit("chat-token", serde_json::json!({
+                "token": "", "done": true,
+                "error": format!("server chat failed ({}) — is the server running on :8080? Start it (or a magazine disk) first, or untick 'Chat via server'.", e)
+            }));
+            return;
+        }
+    };
+
+    let vram_mb = query_vram_mb();
+    let temperature = SamplingConfig::default().temperature;
+    let gen_start = std::time::Instant::now();
+    let mut count = 0usize;
+    let mut full = String::new();
+
+    let reader = std::io::BufReader::new(resp.into_reader());
+    for line in reader.lines() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break; // dropping the reader disconnects; llama-server stops generating
+        }
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let v = match parse_sse_data(&line) {
+            Some(v) => v,
+            None => continue,
+        };
+        if !model_emitted {
+            if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
+                let _ = app.emit("chat-model", serde_json::json!({"model": m, "via": "server"}));
+                model_emitted = true;
+            }
+        }
+        if let Some(tok) = sse_delta_content(&v) {
+            count += 1;
+            let elapsed = gen_start.elapsed().as_secs_f64();
+            let tok_s = if elapsed > 0.001 { (count as f64 / elapsed * 10.0).round() / 10.0 } else { 0.0 };
+            let _ = app.emit("model-stats", serde_json::json!({
+                "tokens_used": count,
+                "ctx_size":    8192,
+                "tok_s":       tok_s,
+                "vram_mb":     vram_mb,
+                "temperature": temperature,
+                "done":        false,
+            }));
+            full.push_str(&tok);
+            let _ = app.emit("chat-token", serde_json::json!({"token": tok, "done": false, "raw": true}));
+        }
+    }
+
+    // Server chat is stateless per request — append the reply to history or
+    // the next turn loses the assistant side of the conversation.
+    if !full.is_empty() {
+        if let Some(state) = app.try_state::<Mutex<AppState>>() {
+            if let Ok(mut guard) = state.lock() {
+                guard.chat_history.push(ChatMessage { role: "assistant".to_string(), content: full });
+            }
+        }
+    }
+
+    let _ = app.emit("model-stats", serde_json::json!({
+        "tokens_used": count, "ctx_size": 8192, "tok_s": 0.0,
+        "vram_mb": vram_mb, "temperature": temperature, "done": true,
+    }));
+    let _ = app.emit("chat-token", serde_json::json!({"token": "", "done": true}));
 }
 
 #[tauri::command]
@@ -776,6 +972,9 @@ fn cmd_stop_generation(state: State<Mutex<AppState>>) -> Result<(), String> {
     if let Some(ref instance) = guard.instance {
         instance.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    // Server-routed chat too: the SSE loop checks this between tokens and
+    // drops the connection (llama-server stops on client disconnect).
+    guard.server_chat_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -867,6 +1066,7 @@ fn cmd_update_settings(
     use_main_for_audio: Option<bool>,
     magazine: Option<Vec<MagazineDisk>>,
     standalone_mode: Option<bool>,
+    chat_via_server: Option<bool>,
     state: State<Mutex<AppState>>,
 ) -> Result<(), String> {
     let mut settings = cmd_get_settings();
@@ -892,6 +1092,7 @@ fn cmd_update_settings(
     if let Some(v) = use_main_for_audio { settings.use_main_for_audio = v; }
     if let Some(m) = magazine { settings.magazine = m; }
     if let Some(v) = standalone_mode { settings.standalone_mode = v; }
+    if let Some(v) = chat_via_server { settings.chat_via_server = v; }
     let path = settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -963,18 +1164,7 @@ fn cmd_start_server(state: State<Mutex<AppState>>) -> Result<(), String> {
     // collision) from leaving already-spawned model worker processes running
     // orphaned. The proxy will accept connections and return upstream errors
     // until the model server is available.
-    std::thread::spawn(|| {
-        let dispatcher = RegistryDispatcher(default_registry());
-        server::start_proxy(dispatcher);
-    });
-
-    // Additive CD-changer swap-control listener on :8086 (proxy :8080 and
-    // llama-server :8081 left untouched). Lets an external orchestrator (SOC
-    // Ultralight) POST /swap to load a different model, reusing start_server.
-    // Safe to call repeatedly: a second bind on :8086 fails harmlessly + returns.
-    std::thread::spawn(|| {
-        server::start_control_server();
-    });
+    ensure_aux_listeners();
 
     // Now start the model server. If the proxy bind fails, it will fail
     // before we spawn the server; if the server spawn fails, the proxy
@@ -982,6 +1172,36 @@ fn cmd_start_server(state: State<Mutex<AppState>>) -> Result<(), String> {
     start_server(&config).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+/// Spawn the proxy (:8080) and the additive CD-changer swap-control listener
+/// (:8086). Safe to call repeatedly — a second bind fails harmlessly inside
+/// each thread. Shared by cmd_start_server and cmd_swap_server so a magazine
+/// load in chat-via-server mode brings the full server stack up by itself.
+fn ensure_aux_listeners() {
+    std::thread::spawn(|| {
+        let dispatcher = RegistryDispatcher(default_registry());
+        server::start_proxy(dispatcher);
+    });
+    std::thread::spawn(|| {
+        server::start_control_server();
+    });
+}
+
+/// GUI-side CD-changer swap: point llama-server at a magazine disk. Shares
+/// server::swap_to with SOC's :8086 POST /swap so a GUI load and an
+/// orchestrator swap behave identically (idempotent, same defaults). Returns
+/// true if the disk was already loaded (no restart happened).
+#[tauri::command]
+fn cmd_swap_server(model_path: String, mmproj_path: Option<String>, app: AppHandle) -> Result<bool, String> {
+    ensure_aux_listeners();
+    let mmproj = mmproj_path.and_then(|p| {
+        let t = p.trim().to_string();
+        if t.is_empty() { None } else { Some(PathBuf::from(t)) }
+    });
+    let already = server::swap_to(PathBuf::from(&model_path), mmproj)?;
+    emit_debug_log(&app, &format!("Server swap -> {} (already_loaded={})", model_path, already), false);
+    Ok(already)
 }
 
 #[tauri::command]
@@ -2738,8 +2958,29 @@ fn main() {
             echo_enabled: true,
             spawned_children: Vec::new(),
             spawned_pids: Vec::new(),
+            server_chat_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }))
         .setup(move |app| {
+            // Remote New-Chat: SOC POSTs /chat/clear on :8086 between
+            // CD-changer hops so each agent starts from a clean window (the
+            // routed envelope carries the content; stale turns from the
+            // previous disk must not bleed into the next agent's context).
+            // The control crate can't reach AppState, so drain its flag here.
+            let clear_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+                if server::take_clear_pending() {
+                    if let Some(state) = clear_handle.try_state::<Mutex<AppState>>() {
+                        if let Ok(mut guard) = state.lock() {
+                            guard.chat_history.clear();
+                            guard.echo_fired.clear();
+                            guard.echo_source = None;
+                        }
+                    }
+                    let _ = clear_handle.emit("chat-cleared", serde_json::json!({}));
+                }
+            });
+
             // Single-instance focus: when a duplicate launch connects to our
             // lock port, bring the existing main window to the foreground
             // instead of silently exiting (which used to leave the user
@@ -2807,6 +3048,7 @@ fn main() {
             cmd_browse_vision_model,
             cmd_browse_gguf_file,
             cmd_clear_chat,
+            cmd_swap_server,
             cmd_browse_mmproj,
             cmd_browse_main_mmproj,
             cmd_start_vision_server,
@@ -2864,3 +3106,67 @@ fn main() {
 
 
 
+
+#[cfg(test)]
+mod server_chat_tests {
+    use super::{build_server_messages, parse_sse_data, sse_delta_content};
+
+    fn hist(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(r, c)| (r.to_string(), c.to_string())).collect()
+    }
+
+    #[test]
+    fn messages_include_system_first_when_set() {
+        let h = hist(&[("user", "hi")]);
+        let v = build_server_messages("be brief", &h, "hi");
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"], "system");
+        assert_eq!(arr[0]["content"], "be brief");
+        assert_eq!(arr[1]["role"], "user");
+    }
+
+    #[test]
+    fn messages_skip_blank_system() {
+        let h = hist(&[("user", "hi")]);
+        let v = build_server_messages("   ", &h, "hi");
+        assert_eq!(v.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn last_user_message_carries_echo_injected_text() {
+        // The stored history keeps the ORIGINAL text; the model must receive
+        // the echo-injected final_text in its place.
+        let h = hist(&[("user", "q1"), ("assistant", "a1"), ("user", "q2")]);
+        let v = build_server_messages("", &h, "q2 [echo]");
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr[0]["content"], "q1");
+        assert_eq!(arr[1]["content"], "a1");
+        assert_eq!(arr[2]["content"], "q2 [echo]");
+    }
+
+    #[test]
+    fn sse_parse_extracts_delta_and_model() {
+        let line = r#"data: {"model":"C:/m/gemma-4.gguf","choices":[{"delta":{"content":"Hel"}}]}"#;
+        let v = parse_sse_data(line).unwrap();
+        assert_eq!(v["model"], "C:/m/gemma-4.gguf");
+        assert_eq!(sse_delta_content(&v).unwrap(), "Hel");
+    }
+
+    #[test]
+    fn sse_parse_ignores_done_blank_and_nonsse() {
+        assert!(parse_sse_data("data: [DONE]").is_none());
+        assert!(parse_sse_data("").is_none());
+        assert!(parse_sse_data(": keep-alive").is_none());
+        assert!(parse_sse_data("data:").is_none());
+    }
+
+    #[test]
+    fn sse_delta_absent_on_role_or_final_chunks() {
+        // First chunk often carries only the role; final chunk only finish_reason.
+        let role = parse_sse_data(r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#).unwrap();
+        assert!(sse_delta_content(&role).is_none());
+        let fin = parse_sse_data(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#).unwrap();
+        assert!(sse_delta_content(&fin).is_none());
+    }
+}

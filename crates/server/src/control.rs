@@ -21,6 +21,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -32,6 +33,16 @@ use crate::types::ServerConfig;
 
 const CONTROL_ADDR: &str = "127.0.0.1:8086";
 const UPSTREAM_ADDR: &str = "127.0.0.1:8081";
+
+/// Set by POST /chat/clear (remote New-Chat — SOC calls it between CD-changer
+/// hops so each agent starts from a clean window). This crate can't reach the
+/// app's chat state, so the app drains the flag via `take_clear_pending`.
+static CLEAR_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Drain the pending remote chat-clear request (true at most once per POST).
+pub fn take_clear_pending() -> bool {
+    CLEAR_PENDING.swap(false, Ordering::Relaxed)
+}
 
 /// Body of a POST /swap request. `context_length`/`threads` are optional so the
 /// caller only has to name the disk (model + mmproj); sane defaults fill the rest.
@@ -95,6 +106,10 @@ fn route(method: &str, path: &str, body: &str) -> String {
     match (method, path) {
         ("POST", "/swap") => do_swap(body),
         ("GET", "/swap/status") => swap_status(),
+        ("POST", "/chat/clear") => {
+            CLEAR_PENDING.store(true, Ordering::Relaxed);
+            json_response(200, r#"{"ok":true}"#)
+        }
         _ => json_response(404, r#"{"ok":false,"error":"not found"}"#),
     }
 }
@@ -110,22 +125,34 @@ fn do_swap(body: &str) -> String {
         }
     };
 
-    // Idempotency: skip the restart (and the context loss it causes) if the
-    // requested disk is already loaded.
-    if let Some(loaded) = loaded_model_path() {
-        if paths_equal(&loaded, &req.model_path) {
-            return json_response(200, r#"{"ok":true,"already":true}"#);
-        }
-    }
-
-    let cfg = build_config(req);
-    match start_server(&cfg) {
-        Ok(()) => json_response(200, r#"{"ok":true,"loading":true}"#),
+    match swap_to(req.model_path, req.mmproj_path) {
+        Ok(true) => json_response(200, r#"{"ok":true,"already":true}"#),
+        Ok(false) => json_response(200, r#"{"ok":true,"loading":true}"#),
         Err(e) => json_response(
             500,
             &format!(r#"{{"ok":false,"error":"{}"}}"#, esc(&e)),
         ),
     }
+}
+
+/// Programmatic swap — the ONE code path shared by the HTTP endpoint (SOC's
+/// POST /swap) and the GUI's magazine loader (cmd_swap_server), so both behave
+/// identically. Returns Ok(true) if the requested disk was already loaded
+/// (idempotent no-op — no restart, no context loss), Ok(false) if a (re)start
+/// was kicked off (caller should poll health until Running).
+pub fn swap_to(model_path: PathBuf, mmproj_path: Option<PathBuf>) -> Result<bool, String> {
+    if let Some(loaded) = loaded_model_path() {
+        if paths_equal(&loaded, &model_path) {
+            return Ok(true);
+        }
+    }
+    let cfg = build_config(SwapRequest {
+        model_path,
+        mmproj_path,
+        context_length: None,
+        threads: None,
+    });
+    start_server(&cfg).map(|_| false)
 }
 
 fn swap_status() -> String {
@@ -270,5 +297,14 @@ mod tests {
     #[test]
     fn route_unknown_is_404() {
         assert!(route("GET", "/nope", "").contains("404"));
+    }
+
+    #[test]
+    fn chat_clear_sets_flag_and_drains_once() {
+        let _ = take_clear_pending(); // reset from any prior test
+        let resp = route("POST", "/chat/clear", "");
+        assert!(resp.contains(r#""ok":true"#));
+        assert!(take_clear_pending());
+        assert!(!take_clear_pending(), "flag must drain after one take");
     }
 }

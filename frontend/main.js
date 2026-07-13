@@ -154,11 +154,21 @@ window.ChatEngine = (function () {
     activeTokens = '';
   }
 
-  function appendToken(token) {
+  function appendToken(token, raw) {
     if (!activeBubble) return;
-    activeTokens += token + '\n';
+    // CLI path emits whole LINES (needs the newline back); server path emits
+    // raw mid-word fragments (must be appended verbatim).
+    activeTokens += raw ? token : token + '\n';
     activeBubble.textContent = activeTokens;
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  // Per-bubble model attribution: retitle the streaming bubble's role line
+  // with the identity of the brain that is answering (e.g. "A6 · gemma").
+  function labelActiveBubble(label) {
+    if (!activeBubbleDiv || !label) return;
+    const roleEl = activeBubbleDiv.querySelector('.message-role');
+    if (roleEl) roleEl.textContent = label;
   }
 
   function finaliseAssistantBubble() {
@@ -209,7 +219,7 @@ window.ChatEngine = (function () {
   return {
     getHistory, onMessage, currentTokenCount,
     sendSystemMessage, sendMessage, stopGeneration,
-    appendToken, finaliseAssistantBubble,
+    appendToken, finaliseAssistantBubble, labelActiveBubble,
   };
 })();
 
@@ -228,20 +238,49 @@ window.addEventListener('focus', () => {
 });
 
 listen('chat-token', event => {
-  const { token, done } = event.payload;
+  const { token, done, raw: rawFrag, error } = event.payload;
+  if (done) {
+    // Surface backend errors in the bubble instead of leaving it empty
+    // (e.g. "server chat failed — is the server running on :8080?").
+    if (error) ChatEngine.appendToken('[' + error + ']', true);
+    ChatEngine.finaliseAssistantBubble();
+    return;
+  }
+  if (rawFrag) {
+    // Server-streamed delta: verbatim fragment, and the CLI-debris tag filter
+    // must not eat prose that happens to contain "end of"/"eof".
+    ChatEngine.appendToken(token, true);
+    return;
+  }
   // Filter out tag messages if enabled (robust matching)
-  const raw = token || '';
+  const rawTok = token || '';
   // Remove leading non-alphanumeric characters (quotes, >, punctuation)
-  const cleaned = raw.replace(/^[^a-zA-Z0-9]+/, '').toLowerCase().trim();
+  const cleaned = rawTok.replace(/^[^a-zA-Z0-9]+/, '').toLowerCase().trim();
   const isInterrupted = cleaned.includes('interrupted by user') || cleaned.includes('interrupted');
   const isEof = cleaned.includes('eof') || cleaned.includes('end of') || cleaned.includes('end-of') || cleaned.includes('end of input') || cleaned.includes('end of generation');
   const isTag = isInterrupted || isEof;
-  if (!done && filterMsgTags && isTag) return;
-  if (done) {
-    ChatEngine.finaliseAssistantBubble();
-  } else {
-    ChatEngine.appendToken(token);
-  }
+  if (filterMsgTags && isTag) return;
+  ChatEngine.appendToken(token);
+});
+
+// Per-bubble attribution: the backend announces which model is answering
+// (local path = the GUI-loaded model; server path = whatever llama-server is
+// actually serving, i.e. the CD-changer disk). NOTHING is hardcoded — the
+// label is derived from the live path every reply, so swapping a new model
+// into a slot relabels bubbles automatically.
+listen('chat-model', event => {
+  const p = (event.payload && event.payload.model) || '';
+  if (!p) return;
+  const label = (window.ModelTray && window.ModelTray.attributionFor)
+    ? window.ModelTray.attributionFor(p) : p;
+  ChatEngine.labelActiveBubble(label);
+});
+
+// Remote New-Chat (SOC POSTs :8086/chat/clear between CD-changer hops): the
+// backend already wiped the history — mirror it in the pane.
+listen('chat-cleared', () => {
+  const m = document.getElementById('messages');
+  if (m) m.innerHTML = '';
 });
 
 // ── Model Tray engine ─────────────────────────────────────────────────────
@@ -270,10 +309,29 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   let loadedSlot  = -1;    // index of the currently-loaded disk (-1 = none)
   let modelLoaded = false;
   let standalone  = true;  // classic single-model mode: slots 2+ greyed out
+  let chatViaServer = false; // chat routes through :8080 (one brain, both hemispheres)
+
+  // ── Adaptive per-bubble identity ─────────────────────────────────────────
+  // Agent number = slot POSITION (slot 1 → A5, slot 2 → A6, …); model name =
+  // first word of whatever file is loaded RIGHT NOW (or the slot's label if
+  // one was typed). Nothing is hardcoded to any model — drop a new distill
+  // into a slot and every bubble picks up its name automatically.
+  function firstWord(p) {
+    const stem = baseName(p).replace(/\.gguf$/i, '');
+    const w = stem.split(/[-_.\s]/).filter(Boolean)[0];
+    return w || stem || 'model';
+  }
+
+  function attributionFor(path) {
+    const i = slotOfPath(path);
+    const disk = i >= 0 ? magazine[i] : null;
+    const name = (disk && disk.label) ? disk.label : firstWord(path);
+    return i >= 0 ? ('A' + (i + 5) + ' · ' + name) : name;
+  }
 
   function openTray()  { trayEl.style.display = 'flex'; refreshFromSettings(); }
   function closeTray() { trayEl.style.display = 'none'; }
-  window.ModelTray = { openTray, closeTray };
+  window.ModelTray = { openTray, closeTray, attributionFor };
 
   btnToggle.addEventListener('click', () => {
     trayEl.style.display === 'none' ? openTray() : closeTray();
@@ -285,6 +343,17 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     chkStandalone.addEventListener('change', () => {
       standalone = chkStandalone.checked;
       invoke('cmd_update_settings', { standaloneMode: standalone }).catch(() => {});
+      renderSlots();
+    });
+  }
+
+  // Chat-via-server toggle: this window's chat goes through :8080, so the
+  // CD-changer swap changes the chat's brain too (not just the HTTP layer).
+  const chkViaServer = document.getElementById('chk-via-server');
+  if (chkViaServer) {
+    chkViaServer.addEventListener('change', () => {
+      chatViaServer = chkViaServer.checked;
+      invoke('cmd_update_settings', { chatViaServer }).catch(() => {});
       renderSlots();
     });
   }
@@ -327,10 +396,14 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     magazine.forEach((disk, i) => slotsEl.appendChild(buildSlot(disk, i)));
     const chk = document.getElementById('chk-standalone');
     if (chk) chk.checked = standalone;
+    const chkVs = document.getElementById('chk-via-server');
+    if (chkVs) chkVs.checked = chatViaServer;
     const hint = document.getElementById('mag-hint');
     if (hint) hint.textContent = standalone
       ? 'single model · classic mode (slots 2–3 off)'
-      : 'load up to 3 models · SOC swaps between them';
+      : (chatViaServer
+          ? 'load up to 3 models · chat + agents share the server brain'
+          : 'load up to 3 models · SOC swaps between them');
   }
 
   function buildSlot(disk, i) {
@@ -438,11 +511,24 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
       // Persist this disk's mmproj as the main mmproj BEFORE loading, so the
       // server / use-main-for-vision attach the right projector for this disk.
       await invoke('cmd_update_settings', { mainMmprojPath: disk.mmproj_path || '' }).catch(() => {});
-      const meta = await invoke('cmd_load_model', { path: disk.model_path });
-      applyLoadedMeta(meta);
-      statusEl.textContent = '';
-      invoke('cmd_update_settings', { lastModelPath: meta.path, lastGpuLayers: meta.gpu_layers }).catch(() => {});
-      if (window.HardwareSlot) window.HardwareSlot.onModelLoaded(meta);
+      if (chatViaServer) {
+        // Server mode: a slot load IS a CD-changer swap — same code path as
+        // SOC's :8086 POST /swap. No GUI-side model is loaded at all.
+        const already = await invoke('cmd_swap_server', {
+          modelPath: disk.model_path,
+          mmprojPath: disk.mmproj_path || null,
+        });
+        if (!already) await waitServerRunning(i);
+        applyServerLoaded(disk, i);
+        statusEl.textContent = '';
+        invoke('cmd_update_settings', { lastModelPath: disk.model_path }).catch(() => {});
+      } else {
+        const meta = await invoke('cmd_load_model', { path: disk.model_path });
+        applyLoadedMeta(meta);
+        statusEl.textContent = '';
+        invoke('cmd_update_settings', { lastModelPath: meta.path, lastGpuLayers: meta.gpu_layers }).catch(() => {});
+        if (window.HardwareSlot) window.HardwareSlot.onModelLoaded(meta);
+      }
       renderSlots();
       closeTray();
     } catch (e) {
@@ -452,7 +538,38 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     }
   }
 
+  // Patient-wait for a server swap: big FP models take minutes to load — show
+  // live elapsed status so it never looks stalled (graceful-wait rule).
+  async function waitServerRunning(i) {
+    const start = Date.now();
+    await new Promise(r => setTimeout(r, 2000)); // let the old server die first
+    while (Date.now() - start < 300000) {
+      try {
+        const st = await invoke('cmd_server_status');
+        if (st && st.status === 'running') return;
+        statusEl.textContent = 'MODEL ' + (i + 1) + ' loading on server… '
+          + Math.round((Date.now() - start) / 1000) + 's (' + (st ? st.status : '?') + ')';
+      } catch (_) {}
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    throw 'server did not reach running within 300s';
+  }
+
+  function applyServerLoaded(disk, i) {
+    modelLabel.textContent = baseName(disk.model_path) + '  ·  via server :8080';
+    indicator.className = 'model-indicator on';
+    indicator.title = 'Serving via :8080';
+    warningEl.classList.add('hidden');
+    modelLoaded = true;
+    btnEject.disabled = false;
+    loadedSlot = i;
+  }
+
   btnEject.addEventListener('click', async () => {
+    // Server mode: the loaded disk lives in llama-server, so an honest eject
+    // stops the server (otherwise the header would say "no model" while the
+    // server keeps answering agents with the old disk).
+    if (chatViaServer) { try { await invoke('cmd_stop_server'); } catch (_) {} }
     try { await invoke('cmd_unload_model'); } catch (_) {}
     document.getElementById('messages').innerHTML = '';
     indicator.className = 'model-indicator off';
@@ -482,6 +599,7 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     invoke('cmd_get_settings').then(s => {
       magazine = normalizeMagazine(s.magazine);
       standalone = (s.standalone_mode !== false);
+      chatViaServer = !!s.chat_via_server;
       seedFromLegacy(s);
       renderSlots();
     }).catch(() => {});
@@ -490,8 +608,31 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   invoke('cmd_get_settings').then(s => {
     magazine = normalizeMagazine(s.magazine);
     standalone = (s.standalone_mode !== false);
+    chatViaServer = !!s.chat_via_server;
     seedFromLegacy(s);
     renderSlots();
+
+    // Chat-via-server mode: the server (not the GUI) owns the loaded model, so
+    // skip the GUI auto-restore — start the server stack instead if a last
+    // disk is known, and reflect it in the header once it's up.
+    if (chatViaServer) {
+      if (s.last_model_path) {
+        statusEl.textContent = 'Starting server with last disk…';
+        invoke('cmd_swap_server', {
+          modelPath: s.last_model_path,
+          mmprojPath: s.main_mmproj_path || null,
+        }).then(async () => {
+          const i = Math.max(0, slotOfPath(s.last_model_path));
+          try { await waitServerRunning(i); } catch (_) {}
+          applyServerLoaded({ model_path: s.last_model_path }, slotOfPath(s.last_model_path));
+          statusEl.textContent = '';
+          renderSlots();
+        }).catch(err => {
+          statusEl.textContent = 'Server start failed: ' + err;
+        });
+      }
+      return;
+    }
 
     // Auto-restore the last model on startup (same behavior as before).
     if (s.last_model_path) {
