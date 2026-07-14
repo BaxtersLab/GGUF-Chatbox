@@ -68,9 +68,18 @@ static LISTENING_SERVER: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
 // ── Managed state ─────────────────────────────────────────────────────────
 
+/// Number of CD-changer chat layers (one persistent conversation per magazine
+/// slot: cd1->A5, cd2->A6, cd3->A7). Each keeps its own history so a swap never
+/// wipes another agent's turns — the layers retire the hop-hygiene window clear.
+const N_LAYERS: usize = 3;
+
 struct AppState {
     instance: Option<ModelInstance>,
-    chat_history: Vec<ChatMessage>,
+    /// One conversation history per CD-changer layer. The ACTIVE one (the layer
+    /// whose disk is loaded) is used for send/infer; the others persist untouched.
+    chat_layers: Vec<Vec<ChatMessage>>,
+    /// Index of the active layer (the loaded disk's magazine slot).
+    active_layer: usize,
     system_prompt: String,
     echo_config: EchoConfig,
     echo_source: Option<EchoSource>,
@@ -81,6 +90,40 @@ struct AppState {
     /// Cancel flag for server-routed chat (chat_via_server). Separate from
     /// ModelInstance.cancel because server chat needs no loaded instance.
     server_chat_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AppState {
+    /// Mutable handle to the active layer's history (clamped in-bounds).
+    fn active_history(&mut self) -> &mut Vec<ChatMessage> {
+        let i = self.active_layer.min(self.chat_layers.len().saturating_sub(1));
+        &mut self.chat_layers[i]
+    }
+    /// Read-only handle to the active layer's history (clamped in-bounds).
+    fn active_history_ref(&self) -> &Vec<ChatMessage> {
+        let i = self.active_layer.min(self.chat_layers.len().saturating_sub(1));
+        &self.chat_layers[i]
+    }
+    /// Point the active layer at `i` (a magazine slot). Resets the per-conversation
+    /// echo state so the new layer captures its own baseline. History is preserved.
+    fn switch_layer(&mut self, i: usize) {
+        let i = i.min(N_LAYERS - 1);
+        if i != self.active_layer {
+            self.active_layer = i;
+            self.echo_source = None;
+            self.echo_fired.clear();
+        }
+    }
+}
+
+/// Which magazine slot (layer index) a model path belongs to, if any. Matches
+/// case/slash-insensitively against settings.magazine. None for ad-hoc/standalone
+/// models not in the magazine.
+fn slot_for_model(path: &str) -> Option<usize> {
+    let settings = cmd_get_settings();
+    let norm = |p: &str| p.replace('\\', "/").to_lowercase();
+    let t = norm(path);
+    settings.magazine.iter()
+        .position(|d| !d.model_path.is_empty() && norm(&d.model_path) == t)
 }
 
 // ── Serialisable types ────────────────────────────────────────────────────
@@ -568,10 +611,13 @@ fn cmd_load_model(
         let _ = unload_model(prev);
     }
     guard.instance = Some(instance);
-    // Reset per-session echo state for new model.
-    guard.chat_history.clear();
-    guard.echo_fired.clear();
-    guard.echo_source = None;
+    // Layer switch: point the active layer at this model's magazine slot so its
+    // conversation PERSISTS across CD-changer swaps (no wipe). If the model isn't
+    // a magazine disk (standalone/ad-hoc), keep the current layer. switch_layer
+    // resets echo for the new conversation.
+    let slot = slot_for_model(&path).unwrap_or(guard.active_layer);
+    guard.switch_layer(slot);
+    let _ = app.emit("layer-changed", serde_json::json!({"index": guard.active_layer}));
 
     // Load or build model card from GGUF metadata; emit to frontend.
     let card = load_or_build_card(&model_path);
@@ -588,24 +634,38 @@ fn cmd_send_message(
 ) -> Result<(), String> {
     let via_server = cmd_get_settings().chat_via_server;
 
+    // Server mode: the loaded disk can change out from under the GUI (SOC swaps
+    // via the :8086 control port, not through here). Before recording or inferring,
+    // point the active layer at whatever the server is ACTUALLY serving, so the
+    // turn lands in the right layer's history — this is what stops one agent's
+    // reply from being wiped/misfiled by another's window churn.
+    if via_server {
+        if let Some(m) = server_loaded_model() {
+            if let Some(slot) = slot_for_model(&m) {
+                if let Ok(mut g) = state.lock() { g.switch_layer(slot); }
+                let _ = app.emit("layer-changed", serde_json::json!({"index": slot}));
+            }
+        }
+    }
+
     // ── Prepare under lock ────────────────────────────────────────────────
     let (instance_ptr, ctx_size, final_text, local_model, server_prep) = {
         let mut guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
 
-        guard.chat_history.push(ChatMessage { role: "user".to_string(), content: text.clone() });
+        guard.active_history().push(ChatMessage { role: "user".to_string(), content: text.clone() });
 
         // ── Context Echo ──────────────────────────────────────────────────
         let mut final_text = text.clone();
         if guard.echo_enabled {
             if guard.echo_source.is_none() {
-                let ce_msgs: Vec<context_echo::ChatMessage> = guard.chat_history.iter()
+                let ce_msgs: Vec<context_echo::ChatMessage> = guard.active_history_ref().iter()
                     .map(|m| context_echo::ChatMessage { role: m.role.clone(), content: m.content.clone() })
                     .collect();
                 let sp = guard.system_prompt.clone();
                 guard.echo_source = Some(capture_echo_source(&sp, &ce_msgs));
             }
 
-            let current_tokens: usize = guard.chat_history.iter()
+            let current_tokens: usize = guard.active_history_ref().iter()
                 .map(|m| m.content.len() / 2)
                 .sum();
             let ctx_size = guard.instance.as_ref()
@@ -629,7 +689,7 @@ fn cmd_send_message(
             // the proxy (:8080) — no local instance required. This is what
             // lets ONE model serve the HTTP agents and this window alike.
             let system = guard.system_prompt.clone();
-            let history: Vec<(String, String)> = guard.chat_history.iter()
+            let history: Vec<(String, String)> = guard.active_history_ref().iter()
                 .map(|m| (m.role.clone(), m.content.clone()))
                 .collect();
             let messages = build_server_messages(&system, &history, &final_text);
@@ -886,7 +946,7 @@ fn run_server_chat(
     if !full.is_empty() {
         if let Some(state) = app.try_state::<Mutex<AppState>>() {
             if let Ok(mut guard) = state.lock() {
-                guard.chat_history.push(ChatMessage { role: "assistant".to_string(), content: full });
+                guard.active_history().push(ChatMessage { role: "assistant".to_string(), content: full });
             }
         }
     }
@@ -931,7 +991,8 @@ fn cmd_reload_gpu_layers(
     emit_debug_log(&app, &format!("Reloaded: {} (ctx={}, gpu_layers={})", path, context_length, clamped), false);
 
     guard.instance = Some(new_instance);
-    guard.chat_history.clear();
+    // Same model reloaded (GPU-layer change) — keep the active layer's history;
+    // reset echo only.
     guard.echo_fired.clear();
     guard.echo_source = None;
 
@@ -944,10 +1005,27 @@ fn cmd_reload_gpu_layers(
 #[tauri::command]
 fn cmd_clear_chat(state: State<Mutex<AppState>>) -> Result<(), String> {
     let mut guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
-    guard.chat_history.clear();
+    guard.active_history().clear();
     guard.echo_fired.clear();
     guard.echo_source = None;
     Ok(())
+}
+
+/// Return one layer's conversation (for the frontend layer viewer) plus which
+/// layer is currently active (the loaded disk's slot).
+#[tauri::command]
+fn cmd_get_layer(index: usize, state: State<Mutex<AppState>>) -> Result<serde_json::Value, String> {
+    let guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
+    let messages: Vec<serde_json::Value> = guard.chat_layers.get(index)
+        .map(|h| h.iter()
+            .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+            .collect())
+        .unwrap_or_default();
+    Ok(serde_json::json!({
+        "index": index,
+        "active": guard.active_layer,
+        "messages": messages,
+    }))
 }
 
 #[tauri::command]
@@ -1193,7 +1271,12 @@ fn ensure_aux_listeners() {
 /// orchestrator swap behave identically (idempotent, same defaults). Returns
 /// true if the disk was already loaded (no restart happened).
 #[tauri::command]
-fn cmd_swap_server(model_path: String, mmproj_path: Option<String>, app: AppHandle) -> Result<bool, String> {
+fn cmd_swap_server(
+    model_path: String,
+    mmproj_path: Option<String>,
+    app: AppHandle,
+    state: State<Mutex<AppState>>,
+) -> Result<bool, String> {
     ensure_aux_listeners();
     let mmproj = mmproj_path.and_then(|p| {
         let t = p.trim().to_string();
@@ -1201,6 +1284,12 @@ fn cmd_swap_server(model_path: String, mmproj_path: Option<String>, app: AppHand
     });
     let already = server::swap_to(PathBuf::from(&model_path), mmproj)?;
     emit_debug_log(&app, &format!("Server swap -> {} (already_loaded={})", model_path, already), false);
+    // Switch the active layer to this disk's slot so its persistent conversation
+    // comes forward (and the layer button flashes). History is preserved.
+    if let Some(slot) = slot_for_model(&model_path) {
+        if let Ok(mut g) = state.lock() { g.switch_layer(slot); }
+        let _ = app.emit("layer-changed", serde_json::json!({"index": slot}));
+    }
     Ok(already)
 }
 
@@ -2950,7 +3039,8 @@ fn main() {
     tauri::Builder::default()
         .manage(Mutex::new(AppState {
             instance: None,
-            chat_history: Vec::new(),
+            chat_layers: vec![Vec::new(); N_LAYERS],
+            active_layer: 0,
             system_prompt: String::new(),
             echo_config: EchoConfig::default(),
             echo_source: None,
@@ -2972,7 +3062,7 @@ fn main() {
                 if server::take_clear_pending() {
                     if let Some(state) = clear_handle.try_state::<Mutex<AppState>>() {
                         if let Ok(mut guard) = state.lock() {
-                            guard.chat_history.clear();
+                            guard.active_history().clear();
                             guard.echo_fired.clear();
                             guard.echo_source = None;
                         }
@@ -3049,6 +3139,7 @@ fn main() {
             cmd_browse_gguf_file,
             cmd_clear_chat,
             cmd_swap_server,
+            cmd_get_layer,
             cmd_browse_mmproj,
             cmd_browse_main_mmproj,
             cmd_start_vision_server,
@@ -3168,5 +3259,81 @@ mod server_chat_tests {
         assert!(sse_delta_content(&role).is_none());
         let fin = parse_sse_data(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#).unwrap();
         assert!(sse_delta_content(&fin).is_none());
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    fn app() -> AppState {
+        AppState {
+            instance: None,
+            chat_layers: vec![Vec::new(); N_LAYERS],
+            active_layer: 0,
+            system_prompt: String::new(),
+            echo_config: EchoConfig::default(),
+            echo_source: None,
+            echo_fired: Vec::new(),
+            echo_enabled: true,
+            spawned_children: Vec::new(),
+            spawned_pids: Vec::new(),
+            server_chat_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn msg(c: &str) -> ChatMessage {
+        ChatMessage { role: "user".to_string(), content: c.to_string() }
+    }
+
+    #[test]
+    fn active_history_routes_to_active_layer() {
+        let mut a = app();
+        a.active_layer = 1;
+        a.active_history().push(msg("hi"));
+        assert_eq!(a.chat_layers[1].len(), 1);
+        assert_eq!(a.chat_layers[0].len(), 0);
+        assert_eq!(a.chat_layers[2].len(), 0);
+    }
+
+    #[test]
+    fn layers_are_independent() {
+        let mut a = app();
+        a.switch_layer(0);
+        a.active_history().push(msg("a"));
+        a.switch_layer(1);
+        a.active_history().push(msg("b"));
+        a.switch_layer(2);
+        a.active_history().push(msg("c"));
+        assert_eq!(a.chat_layers[0][0].content, "a");
+        assert_eq!(a.chat_layers[1][0].content, "b");
+        assert_eq!(a.chat_layers[2][0].content, "c");
+    }
+
+    #[test]
+    fn switch_layer_clamps_out_of_range_and_resets_echo() {
+        let mut a = app();
+        a.echo_fired = vec![0.5, 0.9];
+        a.switch_layer(9);                         // out of range -> clamp
+        assert_eq!(a.active_layer, N_LAYERS - 1);
+        assert!(a.echo_fired.is_empty());          // echo reset for the new layer
+    }
+
+    #[test]
+    fn switch_layer_same_index_keeps_echo() {
+        let mut a = app();
+        a.active_layer = 2;
+        a.echo_fired = vec![0.5];
+        a.switch_layer(2);                         // no change -> no echo reset
+        assert_eq!(a.echo_fired, vec![0.5]);
+    }
+
+    #[test]
+    fn active_history_clamps_if_layer_index_stale() {
+        // active_layer somehow beyond the vec -> clamp to last, never panic.
+        let mut a = app();
+        a.active_layer = 99;
+        a.active_history().push(msg("safe"));
+        assert_eq!(a.chat_layers[N_LAYERS - 1].len(), 1);
     }
 }

@@ -165,6 +165,21 @@ button:disabled { opacity: 0.4; cursor: default; }
    bar stays clear so a shrunken window always has grab room to drag). */
 .new-chat-btn { margin-top: 10px; font-size: 17px; }
 
+/* CD-changer chat-layer buttons (cd1/cd2/cd3) below New Chat. The loaded/working
+   layer FLASHES yellow↔orange (activity lightboard); the currently-viewed layer
+   gets an accent outline. */
+.cwl4-sep {
+  width: 22px; height: 1px; margin: 8px 0 6px;
+  background: var(--border); flex-shrink: 0;
+}
+.cd-layer-btn { font-size: 12px; font-weight: 600; }
+.cd-layer-btn.cd-viewed { border-color: var(--accent); color: var(--text); }
+.cd-layer-btn.cd-active { color: #1e1e1e; animation: cd-flash 1s ease-in-out infinite; }
+@keyframes cd-flash {
+  0%, 100% { background: #f5d90a; }   /* yellow */
+  50%      { background: #ff8c00; }   /* orange */
+}
+
 /* CWL4 pop-out panels */
 .cwl4-panel {
   position: fixed;

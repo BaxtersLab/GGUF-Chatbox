@@ -220,7 +220,66 @@ window.ChatEngine = (function () {
     getHistory, onMessage, currentTokenCount,
     sendSystemMessage, sendMessage, stopGeneration,
     appendToken, finaliseAssistantBubble, labelActiveBubble,
+    renderStored: renderMessage,   // repaint one stored {role,content} (layer viewer)
   };
+})();
+
+// ── CD-Changer chat layers ────────────────────────────────────────────────
+// Three persistent conversations, one per magazine slot (cd1→A5, cd2→A6,
+// cd3→A7). The ACTIVE layer (the loaded disk) is where live turns land; the
+// buttons bring any layer's transcript forward, and the active one FLASHES —
+// an activity lightboard showing which agent is working. Because each layer
+// keeps its own history, a CD-changer swap never wipes another agent's turns
+// (this is what retires the hop-hygiene window-clear).
+(function () {
+  let activeLayer = 0;
+  let viewedLayer = 0;
+  const btns = Array.from(document.querySelectorAll('.cd-layer-btn'));
+  if (!btns.length) return;
+
+  function updateButtons() {
+    btns.forEach(b => {
+      const i = parseInt(b.dataset.layer, 10);
+      b.classList.toggle('cd-active', i === activeLayer);   // flashing = loaded/working
+      b.classList.toggle('cd-viewed', i === viewedLayer);   // outline = currently shown
+    });
+  }
+
+  async function renderLayer(index) {
+    try {
+      const data = await invoke('cmd_get_layer', { index });
+      const msgs = (data && data.messages) || [];
+      const pane = document.getElementById('messages');
+      if (!pane) return;
+      pane.innerHTML = '';
+      msgs.forEach(m => ChatEngine.renderStored(m.role, m.content));
+      pane.scrollTop = pane.scrollHeight;
+    } catch (e) { /* backend not ready yet — ignore */ }
+  }
+
+  function viewLayer(index) {
+    viewedLayer = index;
+    updateButtons();
+    renderLayer(index);
+  }
+
+  btns.forEach(b => b.addEventListener('click',
+    () => viewLayer(parseInt(b.dataset.layer, 10))));
+
+  // Backend announces the active layer on every load / swap / server-mode send.
+  listen('layer-changed', (event) => {
+    const i = (event.payload && typeof event.payload.index === 'number')
+      ? event.payload.index : 0;
+    activeLayer = i;
+    // Follow live: snap the view to the layer that just became active so the
+    // operator always watches the working agent. They can click any button to
+    // read another layer between swaps.
+    if (viewedLayer !== i) { viewedLayer = i; renderLayer(i); }
+    updateButtons();
+  });
+
+  updateButtons();
+  window.ChatLayers = { viewLayer };
 })();
 
 // ── Streaming listener ────────────────────────────────────────────────────
