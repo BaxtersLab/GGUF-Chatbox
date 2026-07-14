@@ -164,7 +164,7 @@ window.ChatEngine = (function () {
   }
 
   // Per-bubble model attribution: retitle the streaming bubble's role line
-  // with the identity of the brain that is answering (e.g. "A6 · gemma").
+  // with the identity of the brain that is answering (e.g. "cd2 · gemma").
   function labelActiveBubble(label) {
     if (!activeBubbleDiv || !label) return;
     const roleEl = activeBubbleDiv.querySelector('.message-role');
@@ -225,12 +225,13 @@ window.ChatEngine = (function () {
 })();
 
 // ── CD-Changer chat layers ────────────────────────────────────────────────
-// Three persistent conversations, one per magazine slot (cd1→A5, cd2→A6,
-// cd3→A7). The ACTIVE layer (the loaded disk) is where live turns land; the
-// buttons bring any layer's transcript forward, and the active one FLASHES —
-// an activity lightboard showing which agent is working. Because each layer
-// keeps its own history, a CD-changer swap never wipes another agent's turns
-// (this is what retires the hop-hygiene window-clear).
+// Three persistent conversations, one per magazine slot (cd1/cd2/cd3). The
+// ACTIVE layer (the loaded disk) is where live turns land; the buttons bring any
+// layer's transcript forward. The active layer is steady green and pulses yellow
+// only while inferring — an activity lightboard. Because each layer keeps its own
+// history, a CD-changer swap never wipes another layer's turns (this retires the
+// hop-hygiene window-clear). (An orchestrator like SOC maps cd1/2/3 to its own
+// agents, but the chatbox stays SOC-agnostic — it only knows cd1/cd2/cd3.)
 (function () {
   let activeLayer = 0;
   let viewedLayer = 0;
@@ -384,10 +385,11 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
   let chatViaServer = false; // chat routes through :8080 (one brain, both hemispheres)
 
   // ── Adaptive per-bubble identity ─────────────────────────────────────────
-  // Agent number = slot POSITION (slot 1 → A5, slot 2 → A6, …); model name =
-  // first word of whatever file is loaded RIGHT NOW (or the slot's label if
-  // one was typed). Nothing is hardcoded to any model — drop a new distill
-  // into a slot and every bubble picks up its name automatically.
+  // Layer name = slot POSITION (slot 1 → cd1, slot 2 → cd2, …) — the CHATBOX's
+  // own labels, so a standalone user sees "cd2 · gemma" (not SOC's A6 noise).
+  // Model name = first word of whatever file is loaded RIGHT NOW (or the slot's
+  // label if one was typed). Nothing is hardcoded to any model — drop a new
+  // distill into a slot and every bubble picks up its name automatically.
   function firstWord(p) {
     const stem = baseName(p).replace(/\.gguf$/i, '');
     const w = stem.split(/[-_.\s]/).filter(Boolean)[0];
@@ -398,7 +400,7 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     const i = slotOfPath(path);
     const disk = i >= 0 ? magazine[i] : null;
     const name = (disk && disk.label) ? disk.label : firstWord(path);
-    return i >= 0 ? ('A' + (i + 5) + ' · ' + name) : name;
+    return i >= 0 ? ('cd' + (i + 1) + ' · ' + name) : name;
   }
 
   function openTray()  { trayEl.style.display = 'flex'; refreshFromSettings(); }
