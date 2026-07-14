@@ -2555,8 +2555,57 @@ fn cmd_voicebox_speak(url: String, text: String, profile_id: String) -> Result<S
 
 // ── HuggingFace model download ────────────────────────────────────────────
 
+/// Simple streamed download of a companion .gguf (an mmproj) into `dir`. No
+/// resume — companions are small. Returns the saved path. Used by the HF
+/// downloader so a model and its mmproj are fetched and tracked together.
+fn download_companion_gguf(
+    url: &str,
+    dir: &std::path::Path,
+    label: &str,
+    log: &dyn Fn(String, bool, bool),
+) -> Result<PathBuf, String> {
+    if !url.starts_with("https://") {
+        return Err("mmproj URL must start with https://".into());
+    }
+    if url.contains("/tree/") || url.contains("/blob/") {
+        return Err("mmproj link is a repo browser page, not a direct .gguf link".into());
+    }
+    let fname = url.rsplit('/').next().unwrap_or("mmproj.gguf")
+        .split('?').next().unwrap_or("mmproj.gguf").to_string();
+    if !fname.to_lowercase().ends_with(".gguf") {
+        return Err(format!("mmproj URL has no .gguf extension: '{}'", fname));
+    }
+    let dest = dir.join(&fname);
+    log(format!("\u{2192} {} GET {}", label, url), false, false);
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(300))
+        .build();
+    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
+    let ct = resp.content_type().to_lowercase();
+    if ct.contains("text/html") || ct.contains("application/json") {
+        return Err("server returned a web page, not a .gguf file".into());
+    }
+    if let Some(t) = resp.header("content-length").and_then(|v| v.parse::<u64>().ok()) {
+        log(format!("  {} size: {:.1} MB", label, t as f64 / 1_048_576.0), false, false);
+    }
+    let tmp = dir.join(format!("{}.part", fname));
+    let mut reader = resp.into_reader();
+    let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
+    drop(file);
+    std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
+    log(format!("\u{2713} {} complete: {}", label, fname), false, false);
+    Ok(dest)
+}
+
 #[tauri::command]
-fn cmd_download_hf_model(url: String, app: AppHandle) -> Result<(), String> {
+fn cmd_download_hf_model(
+    url: String,
+    card_url: Option<String>,
+    mmproj_url: Option<String>,
+    app: AppHandle,
+) -> Result<(), String> {
     // Accept any https:// URL ending in .gguf — not restricted to /resolve/ links.
     if !url.starts_with("https://") {
         return Err("URL must start with https://".into());
@@ -2699,20 +2748,38 @@ fn cmd_download_hf_model(url: String, app: AppHandle) -> Result<(), String> {
         }
         log(format!("\u{2713} Download complete: {}", filename), true, false);
 
-        // Record hf_repo_id in the model card cache.
-        // HF direct URLs look like: .../resolve/main/file.gguf or .../blob/main/file.gguf
+        // Optional mmproj: fetch it into the SAME model folder so the two travel
+        // together, then record it on the card (auto-fills the magazine mmproj).
+        let mut mmproj_saved = String::new();
+        if let Some(mm) = mmproj_url.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            match download_companion_gguf(mm, &sub_dir, "mmproj", &log) {
+                Ok(p)  => mmproj_saved = p.to_string_lossy().into_owned(),
+                Err(e) => log(format!("\u{26a0} mmproj skipped: {} (model kept)", e), false, true),
+            }
+        }
+
+        // Record hf_repo_id (owner/repo from the URL), the user-supplied card
+        // link, and the mmproj — all on the model's cached card, so the system
+        // tracks model + card + mmproj together for as long as the files stay put.
         let hf_repo_id: String = {
-            // Extract owner/repo from URL segments between huggingface.co/ and /resolve or /blob
             let after_host = url.trim_start_matches("https://huggingface.co/");
             let repo = after_host.splitn(3, '/').take(2).collect::<Vec<_>>().join("/");
             if repo.contains('/') { repo } else { String::new() }
         };
-        if !hf_repo_id.is_empty() {
-            let mut card = load_or_build_card(&dest);
-            if card.hf_repo_id.is_empty() {
-                card.hf_repo_id = hf_repo_id;
-                let _ = save_card(&dest, &card);
-            }
+        let mut card = load_or_build_card(&dest);
+        let mut changed = false;
+        if !hf_repo_id.is_empty() && card.hf_repo_id.is_empty() {
+            card.hf_repo_id = hf_repo_id; changed = true;
+        }
+        if let Some(cu) = card_url.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if card.card_url != *cu { card.card_url = cu.to_string(); changed = true; }
+        }
+        if !mmproj_saved.is_empty() && card.mmproj_path != mmproj_saved {
+            card.mmproj_path = mmproj_saved; changed = true;
+        }
+        if changed {
+            let _ = save_card(&dest, &card);
+            log("\u{2713} tracked model + card + mmproj".into(), false, false);
         }
     });
     Ok(())

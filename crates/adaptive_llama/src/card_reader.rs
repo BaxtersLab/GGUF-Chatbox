@@ -52,6 +52,16 @@ pub struct ModelCard {
     pub size_mb: u64,
     /// Quantisation format (derived from filename, e.g. "Q4_K_M", "BF16").
     pub quant: String,
+    /// Model-card / HF page link the user supplied at download time. Kept so the
+    /// system can (later) fetch the card's chat/tool template for adaptive
+    /// per-model prompt shaping. Empty if unknown.
+    #[serde(default)]
+    pub card_url: String,
+    /// Associated multimodal projector (.gguf) for this model, tracked so it
+    /// travels with the model and can auto-fill the magazine mmproj slot. Empty
+    /// for text-only models. Valid only while the files are not moved by the user.
+    #[serde(default)]
+    pub mmproj_path: String,
 }
 
 impl ModelCard {
@@ -83,6 +93,8 @@ impl ModelCard {
             layers,
             size_mb,
             quant,
+            card_url: String::new(),
+            mmproj_path: String::new(),
         }
     }
 }

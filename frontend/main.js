@@ -1522,17 +1522,29 @@ window.CWL4 = (function () {
 
   <div style="font-size:11px;color:var(--text-dim);line-height:1.5">
     Paste a direct link to a <code>.gguf</code> file and click <b>Download</b>.
+    Optionally add the model-card link and an mmproj link — all three are tracked
+    together with the model (as long as the files aren't moved).
     Partial downloads are saved as <code>.part</code> files and resumed automatically.
   </div>
 
-  <!-- URL input + Download button -->
+  <!-- Model .gguf URL + Download button -->
   <div style="display:flex;gap:6px;align-items:center;">
     <input type="text" id="hf-url"
-      placeholder="https://huggingface.co/…/resolve/main/model.gguf"
+      placeholder="model .gguf URL  (…/resolve/main/model.gguf)"
       style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);
              border-radius:4px;padding:5px 8px;font-size:11px;min-width:0;" />
     <button id="hf-download-btn" style="white-space:nowrap;">⬇ Download</button>
   </div>
+
+  <!-- Optional: model-card link + mmproj link (tracked with the model) -->
+  <input type="text" id="hf-card-url"
+    placeholder="model card link  (optional — the HF model page URL)"
+    style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);
+           border-radius:4px;padding:5px 8px;font-size:11px;min-width:0;" />
+  <input type="text" id="hf-mmproj-url"
+    placeholder="mmproj .gguf URL  (optional — for vision models)"
+    style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);
+           border-radius:4px;padding:5px 8px;font-size:11px;min-width:0;" />
 
   <!-- Resume / cancel row -->
   <div style="display:flex;gap:8px;align-items:center;">
@@ -1552,12 +1564,16 @@ window.CWL4 = (function () {
 
   function wireEvents(div) {
     const urlInput  = div.querySelector('#hf-url');
+    const cardInput = div.querySelector('#hf-card-url');
+    const mmInput   = div.querySelector('#hf-mmproj-url');
     const dlBtn     = div.querySelector('#hf-download-btn');
     const resumeBtn = div.querySelector('#hf-resume-btn');
     const terminal  = div.querySelector('#hf-terminal');
     const statusEl  = div.querySelector('#hf-status');
 
     let currentUrl = null;
+    let currentCard = null;
+    let currentMmproj = null;
     let downloading = false;
 
     function appendLine(text, isError) {
@@ -1575,14 +1591,20 @@ window.CWL4 = (function () {
       resumeBtn.disabled = !active; // enable Resume only when a download is in progress or failed
     }
 
-    async function startDownload(url) {
+    async function startDownload(url, cardUrl, mmprojUrl) {
       terminal.innerHTML = '';
       statusEl.textContent = '';
       currentUrl = url;
+      currentCard = cardUrl || null;
+      currentMmproj = mmprojUrl || null;
       setDownloading(true);
       statusEl.textContent = 'Connecting…';
       try {
-        await invoke('cmd_download_hf_model', { url });
+        await invoke('cmd_download_hf_model', {
+          url,
+          cardUrl: cardUrl || null,
+          mmprojUrl: mmprojUrl || null,
+        });
         // done event fires through hf-download-log; nothing extra needed here
       } catch (e) {
         appendLine('✗ ' + e, true);
@@ -1594,14 +1616,14 @@ window.CWL4 = (function () {
 
     dlBtn.addEventListener('click', () => {
       const url = urlInput.value.trim();
-      if (!url) { statusEl.textContent = 'Enter a URL first.'; return; }
+      if (!url) { statusEl.textContent = 'Enter a model URL first.'; return; }
       resumeBtn.disabled = true;
-      startDownload(url);
+      startDownload(url, cardInput.value.trim(), mmInput.value.trim());
     });
 
     resumeBtn.addEventListener('click', () => {
       if (!currentUrl) { statusEl.textContent = 'Paste the original URL above first.'; return; }
-      startDownload(currentUrl);
+      startDownload(currentUrl, currentCard, currentMmproj);
     });
 
     // Listen for streaming log lines from Rust
