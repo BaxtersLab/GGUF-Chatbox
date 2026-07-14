@@ -234,15 +234,24 @@ window.ChatEngine = (function () {
 (function () {
   let activeLayer = 0;
   let viewedLayer = 0;
+  let inferring = false;
   const btns = Array.from(document.querySelectorAll('.cd-layer-btn'));
   if (!btns.length) return;
 
   function updateButtons() {
     btns.forEach(b => {
       const i = parseInt(b.dataset.layer, 10);
-      b.classList.toggle('cd-active', i === activeLayer);   // flashing = loaded/working
-      b.classList.toggle('cd-viewed', i === viewedLayer);   // outline = currently shown
+      b.classList.toggle('cd-active', i === activeLayer);          // steady green = current layer
+      b.classList.toggle('cd-viewed', i === viewedLayer);          // outline = currently shown
+      b.classList.toggle('cd-inferring', inferring && i === activeLayer); // yellow pulse = working now
     });
+  }
+
+  // Called from the streaming listener: pulse the active layer only WHILE it
+  // generates. Idle = calm green, no animation.
+  function setInferring(active) {
+    inferring = !!active;
+    updateButtons();
   }
 
   async function renderLayer(index) {
@@ -271,6 +280,7 @@ window.ChatEngine = (function () {
     const i = (event.payload && typeof event.payload.index === 'number')
       ? event.payload.index : 0;
     activeLayer = i;
+    inferring = false;   // a swap ended the old generation; next token re-arms it
     // Follow live: snap the view to the layer that just became active so the
     // operator always watches the working agent. They can click any button to
     // read another layer between swaps.
@@ -279,7 +289,7 @@ window.ChatEngine = (function () {
   });
 
   updateButtons();
-  window.ChatLayers = { viewLayer };
+  window.ChatLayers = { viewLayer, setInferring };
 })();
 
 // ── Streaming listener ────────────────────────────────────────────────────
@@ -303,8 +313,11 @@ listen('chat-token', event => {
     // (e.g. "server chat failed — is the server running on :8080?").
     if (error) ChatEngine.appendToken('[' + error + ']', true);
     ChatEngine.finaliseAssistantBubble();
+    if (window.ChatLayers) window.ChatLayers.setInferring(false);   // pulse off
     return;
   }
+  // A token is arriving → the active layer is generating: pulse it.
+  if (window.ChatLayers) window.ChatLayers.setInferring(true);
   if (rawFrag) {
     // Server-streamed delta: verbatim fragment, and the CLI-debris tag filter
     // must not eat prose that happens to contain "end of"/"eof".
