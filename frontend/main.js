@@ -1167,13 +1167,19 @@ window.CWL4 = (function () {
   const cfgStatus         = document.getElementById('srv-config-status');
   let pollTimer = null;
 
-  function openTray()  { trayEl.style.display = 'flex'; startPolling(); }
-  function closeTray() { trayEl.style.display = 'none'; stopPolling(); }
+  // Open/close only toggle VISIBILITY. Status polling runs ALWAYS (started at
+  // init below) so the beacon — which lives on the tray BUTTON, visible even when
+  // the panel is closed — goes green the moment a model finishes loading, without
+  // the operator having to open the panel first (the old code only polled while
+  // the tray was open, so the beacon stayed stale until opened).
+  function openTray()  { trayEl.style.display = 'flex'; pollStatus(); }
+  function closeTray() { trayEl.style.display = 'none'; }
 
   btnToggle.addEventListener('click', () => {
     trayEl.style.display === 'none' ? openTray() : closeTray();
   });
   btnClose.addEventListener('click', closeTray);
+  startPolling();   // always-on background poll → live beacon
 
   function applyStatus(status, modelName) {
     const s = status || 'stopped';
