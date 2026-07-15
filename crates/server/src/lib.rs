@@ -7,7 +7,7 @@ pub mod control;
 pub mod mcp;
 
 pub use types::{ServerConfig, ServerStatus, ToolDispatcher, NoopDispatcher};
-pub use server_manager::{start_server, stop_server, health_check, model_name_from_path};
+pub use server_manager::{start_server, stop_server, health_check, model_name_from_path, last_server_config};
 pub use proxy::{start_proxy, start_proxy_on};
 pub use control::{start_control_server, swap_to, take_clear_pending};
 pub use mcp::{start_mcp_server, stop_mcp_server};

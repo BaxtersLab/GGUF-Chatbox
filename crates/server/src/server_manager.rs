@@ -13,6 +13,26 @@ use crate::types::{ServerConfig, ServerStatus};
 // Global server process handle — no unsafe, no static mut.
 static SERVER: Mutex<Option<Child>> = Mutex::new(None);
 
+// The config the server was last started with. Lets the Start button relaunch
+// the server in chat-via-server mode, where there is no GUI-loaded local
+// instance to rebuild the config from. Kept across stop_server() — overwritten
+// only on the next successful start.
+static LAST_CONFIG: Mutex<Option<ServerConfig>> = Mutex::new(None);
+
+/// Record the config a start used, for a later restart. Best-effort.
+fn remember_config(config: &ServerConfig) {
+    if let Ok(mut lc) = LAST_CONFIG.lock() {
+        *lc = Some(config.clone());
+    }
+}
+
+/// The config the server was last started with (GUI load OR magazine/chat-via-
+/// server swap — all starts funnel through start_server). None only before the
+/// very first start; survives stop() so Start can relaunch what last ran.
+pub fn last_server_config() -> Option<ServerConfig> {
+    LAST_CONFIG.lock().ok().and_then(|g| g.clone())
+}
+
 /// Start llama-server with auto-calculated flags.
 ///
 /// Binds to 127.0.0.1:8081 (internal; the proxy sits on :8080).
@@ -72,6 +92,7 @@ pub fn start_server(config: &ServerConfig) -> Result<(), String> {
 
     let child = cmd.spawn().map_err(|e| format!("failed to spawn llama-server: {e}"))?;
     *guard = Some(child);
+    remember_config(config);   // enable Start to relaunch this in server mode
     Ok(())
 }
 
@@ -150,4 +171,37 @@ pub fn model_name_from_path(model_path: &PathBuf) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("local")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(path: &str) -> ServerConfig {
+        ServerConfig {
+            model_path: PathBuf::from(path),
+            context_length: 4096,
+            threads: 9,
+            mmproj_path: None,
+            temperature_override: None,
+            n_predict_override: None,
+            ctx_cap_override: None,
+        }
+    }
+
+    #[test]
+    fn remembered_config_roundtrips_for_server_mode_restart() {
+        // This is what lets the panel Start relaunch the server in chat-via-server
+        // mode (no GUI instance): the last-run config is retained and returned.
+        remember_config(&cfg(r"C:\m\gemma4-v2-Q8_0.gguf"));
+        let got = last_server_config().expect("a config was remembered");
+        assert_eq!(got.model_path, PathBuf::from(r"C:\m\gemma4-v2-Q8_0.gguf"));
+        assert_eq!(got.context_length, 4096);
+        // A later start overwrites it (a fresh swap wins).
+        remember_config(&cfg(r"C:\m\Qwythos.gguf"));
+        assert_eq!(
+            last_server_config().unwrap().model_path,
+            PathBuf::from(r"C:\m\Qwythos.gguf")
+        );
+    }
 }

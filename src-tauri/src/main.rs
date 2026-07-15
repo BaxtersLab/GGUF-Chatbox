@@ -12,7 +12,7 @@ use context_echo::{
     capture_echo_source, check_milestone, inject_echo,
     EchoConfig, EchoSource,
 };
-use server::{start_server, stop_server, health_check, model_name_from_path, ServerConfig, ServerStatus};
+use server::{start_server, stop_server, health_check, model_name_from_path, last_server_config, ServerConfig, ServerStatus};
 use tool_belt::default_registry;
 
 /// Wrapper to send a `*mut ModelInstance` across thread boundaries.
@@ -1248,53 +1248,61 @@ fn cmd_update_settings(
 
 #[tauri::command]
 fn cmd_start_server(state: State<Mutex<AppState>>) -> Result<(), String> {
-    let guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
-    let instance = guard.instance.as_ref().ok_or("no model loaded")?;
-    let model_path = instance.config.model_path.clone();
-    let ctx = instance.context_length;
-    drop(guard);
+    // A GUI-loaded local instance? Build a fresh config from it (with app-profile
+    // overrides). Otherwise (chat-via-server / magazine mode: the model lives in
+    // llama-server, there is NO local instance) fall back to the config the server
+    // last ran — so the panel's Stop then Start relaunches what was loaded. Only a
+    // server that has never started once yields "no model loaded".
+    let instance_cfg = {
+        let guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
+        guard.instance.as_ref().map(|i| (i.config.model_path.clone(), i.context_length))
+    };
 
-    // Load active app profile and apply its parameter overrides.
-    let settings = cmd_get_settings();
-    let (temp_override, n_predict_override, ctx_cap_override) = if settings.auto_apply_card_params {
-        let profile_id = if settings.active_app_profile.is_empty() {
-            "general".to_string()
-        } else {
-            settings.active_app_profile.clone()
-        };
-        let profiles: Vec<AppProfile> = std::fs::read_to_string(profiles_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        if let Some(p) = profiles.iter().find(|p| p.id == profile_id) {
-            (p.temperature_override, p.n_predict_override, p.ctx_cap_override)
+    let config = if let Some((model_path, ctx)) = instance_cfg {
+        // Load active app profile and apply its parameter overrides.
+        let settings = cmd_get_settings();
+        let (temp_override, n_predict_override, ctx_cap_override) = if settings.auto_apply_card_params {
+            let profile_id = if settings.active_app_profile.is_empty() {
+                "general".to_string()
+            } else {
+                settings.active_app_profile.clone()
+            };
+            let profiles: Vec<AppProfile> = std::fs::read_to_string(profiles_path())
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            if let Some(p) = profiles.iter().find(|p| p.id == profile_id) {
+                (p.temperature_override, p.n_predict_override, p.ctx_cap_override)
+            } else {
+                (None, None, None)
+            }
         } else {
             (None, None, None)
+        };
+
+        // Pass main_mmproj_path to the server when set — required for multimodal
+        // models (Phi-4, LLaVA, etc.) loaded as the main chat model.
+        let main_mmproj: Option<PathBuf> = {
+            let p = settings.main_mmproj_path.trim();
+            if !p.is_empty() {
+                let pb = PathBuf::from(p);
+                if pb.exists() { Some(pb) } else { None }
+            } else {
+                None
+            }
+        };
+
+        ServerConfig {
+            model_path,
+            context_length: ctx,
+            threads: 9,
+            mmproj_path: main_mmproj,
+            temperature_override: temp_override,
+            n_predict_override,
+            ctx_cap_override,
         }
     } else {
-        (None, None, None)
-    };
-
-    // Pass main_mmproj_path to the server when set — required for multimodal
-    // models (Phi-4, LLaVA, etc.) loaded as the main chat model.
-    let main_mmproj: Option<PathBuf> = {
-        let p = settings.main_mmproj_path.trim();
-        if !p.is_empty() {
-            let pb = PathBuf::from(p);
-            if pb.exists() { Some(pb) } else { None }
-        } else {
-            None
-        }
-    };
-
-    let config = ServerConfig {
-        model_path: model_path.clone(),
-        context_length: ctx,
-        threads: 9,
-        mmproj_path: main_mmproj,
-        temperature_override: temp_override,
-        n_predict_override,
-        ctx_cap_override,
+        last_server_config().ok_or("no model loaded")?
     };
 
     // IMPORTANT: bind/listen on the public proxy port BEFORE spawning the
