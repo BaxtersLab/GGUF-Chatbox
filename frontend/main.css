@@ -991,9 +991,13 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 
 /* ── CD-Changer Magazine loader (3 slots now; scales to N — see MAG_SIZE in main.js) ── */
-.mag-header { display: flex; align-items: center; gap: 10px; }
-.mag-title  { font-size: 13px; font-weight: 600; color: var(--text); }
-.mag-hint   { flex: 1; font-size: 11px; color: var(--text-dim); }
+.mag-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mag-title  { font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
+/* Single-line, ellipsis-truncated: at the narrow ergonomic width this caption
+   must NOT collapse to one-word-per-line and grow tall — that vertical overflow
+   used to push the model slots off the window so MODEL 3 was unreachable. */
+.mag-hint   { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .magazine-slots {
   display: flex; flex-direction: column; gap: 10px;
   max-height: 56vh; overflow-y: auto;      /* 3 slots fit; 10 would scroll */
@@ -1037,6 +1041,6 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 /* Standalone mode: slots 2-3 disabled (classic single-model behavior) */
 .mag-slot.mag-off { opacity: 0.35; pointer-events: none; }
-.mag-standalone { display: flex; align-items: center; gap: 4px;
+.mag-standalone { display: flex; align-items: center; gap: 4px; flex-shrink: 0;
   font-size: 11px; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
 .mag-standalone input { cursor: pointer; }
