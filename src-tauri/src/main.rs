@@ -324,6 +324,61 @@ fn profiles_path() -> std::path::PathBuf {
         .join("app_profiles.json")
 }
 
+// ── SOC bridge ──────────────────────────────────────────────────────────────
+// When an orchestrator (SOC) is present it drops a marker file we keep fresh;
+// while that marker is fresh, every completed server-mode reply is written to a
+// watched drop-folder so SOC reads the EXACT text instead of OCR-scraping the
+// window. OCR misreads digits ("Agent7" -> "Agent?"), which breaks relay
+// routing; the file channel is lossless. Running standalone (no SOC, no marker)
+// this stays fully dormant. Best-effort throughout — never errors into chat.
+const SOC_BRIDGE_MARKER_TTL: u64 = 120; // marker considered stale after N seconds
+
+fn soc_bridge_dir() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".gguf-chatbox")
+        .join("soc_bridge")
+}
+
+/// True only if the SOC presence marker exists and was refreshed within ttl_secs.
+fn soc_bridge_marker_fresh(marker: &std::path::Path, ttl_secs: u64) -> bool {
+    std::fs::metadata(marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|e| e.as_secs() < ttl_secs)
+        .unwrap_or(false)
+}
+
+/// Write one reply to the drop-folder as `<ms>_cd<slot+1>.md`. Skips empty text;
+/// returns the path written. Pure w.r.t. the marker so it is unit-testable.
+fn soc_bridge_write_reply(
+    replies_dir: &std::path::Path,
+    reply: &str,
+    slot: usize,
+) -> Option<std::path::PathBuf> {
+    if reply.trim().is_empty() {
+        return None;
+    }
+    std::fs::create_dir_all(replies_dir).ok()?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = replies_dir.join(format!("{}_cd{}.md", ts, slot + 1));
+    std::fs::write(&path, reply).ok()?;
+    Some(path)
+}
+
+/// Push a completed reply to SOC — no-op when dormant (no fresh marker).
+fn soc_bridge_push(reply: &str, slot: usize) {
+    let dir = soc_bridge_dir();
+    if !soc_bridge_marker_fresh(&dir.join("soc_active.json"), SOC_BRIDGE_MARKER_TTL) {
+        return;
+    }
+    let _ = soc_bridge_write_reply(&dir.join("replies"), reply, slot);
+}
+
 #[derive(Serialize)]
 struct ModelStats {
     tokens_used: usize,
@@ -944,11 +999,16 @@ fn run_server_chat(
     // Server chat is stateless per request — append the reply to history or
     // the next turn loses the assistant side of the conversation.
     if !full.is_empty() {
+        let mut slot = 0usize;
         if let Some(state) = app.try_state::<Mutex<AppState>>() {
             if let Ok(mut guard) = state.lock() {
-                guard.active_history().push(ChatMessage { role: "assistant".to_string(), content: full });
+                slot = guard.active_layer;
+                guard.active_history().push(ChatMessage { role: "assistant".to_string(), content: full.clone() });
             }
         }
+        // SOC bridge: hand the orchestrator the EXACT reply (bypasses OCR, which
+        // misreads digits). Dormant no-op when no SOC marker is present.
+        soc_bridge_push(&full, slot);
     }
 
     let _ = app.emit("model-stats", serde_json::json!({
@@ -3326,6 +3386,72 @@ mod server_chat_tests {
         assert!(sse_delta_content(&role).is_none());
         let fin = parse_sse_data(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#).unwrap();
         assert!(sse_delta_content(&fin).is_none());
+    }
+}
+
+#[cfg(test)]
+mod soc_bridge_tests {
+    use super::{soc_bridge_marker_fresh, soc_bridge_write_reply, SOC_BRIDGE_MARKER_TTL};
+    use std::time::SystemTime;
+
+    fn tmp(sub: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "gguf_bridge_test_{}_{}_{}",
+            std::process::id(),
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos(),
+            sub,
+        ));
+        let _ = std::fs::create_dir_all(&p);
+        p
+    }
+
+    #[test]
+    fn marker_absent_is_not_fresh() {
+        // Standalone (no SOC): the push must stay dormant.
+        let dir = tmp("absent");
+        assert!(!soc_bridge_marker_fresh(&dir.join("soc_active.json"), SOC_BRIDGE_MARKER_TTL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn freshly_written_marker_is_fresh() {
+        let dir = tmp("fresh");
+        let marker = dir.join("soc_active.json");
+        std::fs::write(&marker, "{}").unwrap();
+        assert!(soc_bridge_marker_fresh(&marker, SOC_BRIDGE_MARKER_TTL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_ttl_marker_is_stale() {
+        // ttl 0 => a marker is never fresh (boundary: elapsed is never < 0).
+        let dir = tmp("stale");
+        let marker = dir.join("soc_active.json");
+        std::fs::write(&marker, "{}").unwrap();
+        assert!(!soc_bridge_marker_fresh(&marker, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_reply_creates_slot_tagged_file() {
+        let dir = tmp("write");
+        let replies = dir.join("replies");
+        let p = soc_bridge_write_reply(&replies, "To Agent7\nsolve 2+2\nend message now", 1).unwrap();
+        assert!(p.exists());
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.ends_with("_cd2.md"), "slot 1 -> cd2, got {}", name);
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains("To Agent7"));
+        assert!(body.contains("end message now"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_reply_skips_empty() {
+        let dir = tmp("empty");
+        let replies = dir.join("replies");
+        assert!(soc_bridge_write_reply(&replies, "   \n  ", 0).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
