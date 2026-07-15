@@ -255,9 +255,17 @@ window.ChatEngine = (function () {
     updateButtons();
   }
 
+  let renderGen = 0;   // guards against a stale async render clobbering a newer one
   async function renderLayer(index) {
+    const gen = ++renderGen;
     try {
       const data = await invoke('cmd_get_layer', { index });
+      // A newer render (e.g. the post-stream sync) started while we awaited —
+      // abort so this stale snapshot can't wipe the fresher one. This is what
+      // used to erase a just-streamed reply: layer-changed fired a renderLayer
+      // that snapshotted the layer BEFORE the reply landed, then its late
+      // innerHTML='' wiped the live tokens.
+      if (gen !== renderGen) return;
       const msgs = (data && data.messages) || [];
       const pane = document.getElementById('messages');
       if (!pane) return;
@@ -265,6 +273,13 @@ window.ChatEngine = (function () {
       msgs.forEach(m => ChatEngine.renderStored(m.role, m.content));
       pane.scrollTop = pane.scrollHeight;
     } catch (e) { /* backend not ready yet — ignore */ }
+  }
+
+  // Re-paint the active layer from its stored history — called when a stream
+  // finishes so the pane matches the backend (which now has the completed
+  // reply), regardless of any mid-stream render race.
+  function syncActive() {
+    if (viewedLayer === activeLayer) renderLayer(activeLayer);
   }
 
   function viewLayer(index) {
@@ -290,7 +305,7 @@ window.ChatEngine = (function () {
   });
 
   updateButtons();
-  window.ChatLayers = { viewLayer, setInferring };
+  window.ChatLayers = { viewLayer, setInferring, syncActive };
 })();
 
 // ── Streaming listener ────────────────────────────────────────────────────
@@ -314,7 +329,13 @@ listen('chat-token', event => {
     // (e.g. "server chat failed — is the server running on :8080?").
     if (error) ChatEngine.appendToken('[' + error + ']', true);
     ChatEngine.finaliseAssistantBubble();
-    if (window.ChatLayers) window.ChatLayers.setInferring(false);   // pulse off
+    if (window.ChatLayers) {
+      window.ChatLayers.setInferring(false);   // pulse off
+      // Reconcile the pane with the backend layer (now holding the finished
+      // reply) so a mid-stream render race can't leave the turn invisible —
+      // this is the fix for 'A7 replied but nothing showed in the cd3 window'.
+      window.ChatLayers.syncActive();
+    }
     return;
   }
   // A token is arriving → the active layer is generating: pulse it.
