@@ -18,6 +18,12 @@ pub fn llama_server_local_path() -> PathBuf {
     llama_install_dir().join(LLAMA_SERVER_BIN)
 }
 
+/// Platform PATH-lookup command: `where` on Windows, `which` elsewhere.
+#[cfg(target_os = "windows")]
+const PATH_LOOKUP_CMD: &str = "where";
+#[cfg(not(target_os = "windows"))]
+const PATH_LOOKUP_CMD: &str = "which";
+
 /// Detect llama-server: check local install dir first, then PATH.
 /// Returns `Some(path)` if found, `None` otherwise.
 pub fn detect_llama_server() -> Option<PathBuf> {
@@ -26,7 +32,7 @@ pub fn detect_llama_server() -> Option<PathBuf> {
         return Some(local);
     }
 
-    if let Ok(output) = std::process::Command::new("where")
+    if let Ok(output) = std::process::Command::new(PATH_LOOKUP_CMD)
         .arg(LLAMA_SERVER_BIN)
         .output()
     {
@@ -73,7 +79,7 @@ pub fn detect_llama() -> Option<PathBuf> {
     }
 
     // Check PATH
-    if let Ok(output) = std::process::Command::new("where")
+    if let Ok(output) = std::process::Command::new(PATH_LOOKUP_CMD)
         .arg(LLAMA_BIN)
         .output()
     {
@@ -94,7 +100,7 @@ pub fn detect_llama() -> Option<PathBuf> {
     #[cfg(not(target_os = "windows"))]
     let alt = "llama";
 
-    if let Ok(output) = std::process::Command::new("where").arg(alt).output() {
+    if let Ok(output) = std::process::Command::new(PATH_LOOKUP_CMD).arg(alt).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(line) = stdout.lines().next() {
