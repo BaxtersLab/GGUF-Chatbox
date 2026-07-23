@@ -49,9 +49,16 @@ fn reregistering_replaces_the_handler() {
 }
 
 #[test]
-fn default_registry_ships_system_info_and_file_ops() {
+fn default_registry_ships_system_info_file_ops_and_vscodium() {
     let r = default_registry();
     let mut names: Vec<String> = r.list_tools().into_iter().map(|t| t.name).collect();
     names.sort();
-    assert_eq!(names, vec!["file_ops".to_string(), "system_info".to_string()]);
+    assert_eq!(
+        names,
+        vec![
+            "file_ops".to_string(),
+            "system_info".to_string(),
+            "vscodium_workspace".to_string(),
+        ]
+    );
 }
