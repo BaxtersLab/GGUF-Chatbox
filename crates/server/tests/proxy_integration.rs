@@ -152,6 +152,41 @@ fn plain_response_passes_through_unchanged() {
 }
 
 #[test]
+fn fenced_a6_tool_block_dispatches_then_returns_final_response() {
+    // Path B: the model doesn't emit native tool_calls — it writes an ```a6-tool```
+    // block in the message content. The proxy must extract it, dispatch, and
+    // re-query, exactly like the native path.
+    let block_turn = serde_json::json!({
+        "choices": [{"message": {"role": "assistant",
+            "content": "On it.\n```a6-tool\n{\"op\": \"create_folder\", \"path\": \"src/models\"}\n```"}}]
+    })
+    .to_string();
+    let final_turn =
+        serde_json::json!({"choices":[{"message":{"role":"assistant","content":"folder created"}}]})
+            .to_string();
+
+    let upstream = fake_upstream(vec![block_turn, final_turn]);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let addr = spawn_proxy(upstream, RecordingDispatcher { calls: Arc::clone(&calls) });
+
+    let resp = http_post(
+        &addr,
+        "/v1/chat/completions",
+        r#"{"messages":[{"role":"user","content":"make a models folder"}]}"#,
+    );
+
+    assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
+    assert!(resp.contains("folder created"), "got: {resp}");
+
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "exactly one fenced dispatch expected");
+    assert_eq!(calls[0].0, "vscodium_workspace", "default tool name");
+    assert_eq!(calls[0].1["op"], "create_folder");
+    assert_eq!(calls[0].1["path"], "src/models");
+    assert!(calls[0].1.get("tool").is_none(), "the 'tool' selector must not leak into args");
+}
+
+#[test]
 fn tool_call_loop_dispatches_then_returns_final_response() {
     // First upstream turn asks for a tool call; second returns plain text.
     let tool_turn = serde_json::json!({

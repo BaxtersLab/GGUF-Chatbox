@@ -19,6 +19,31 @@ use crate::types::ToolDispatcher;
 const MAX_TOOL_ITERATIONS: usize = 5;
 const UPSTREAM_ADDR: &str = "127.0.0.1:8081";
 
+// Path B (config-independent tool calls): extract an a6-tool fenced block from a
+// model reply and return its JSON object. Lets a model that does NOT emit native
+// OpenAI `tool_calls` (e.g. a llama-server started without `--jinja`) still call
+// a tool by writing a fenced block, which the proxy loop then dispatches exactly
+// like a native call.
+//
+// The block is a markdown fence tagged `a6-tool`; its body is the tool's
+// arguments as a JSON object, with an optional `"tool"` field naming the tool
+// (default `vscodium_workspace`). For example, a fence tagged a6-tool wrapping:
+//   { "op": "create_folder", "path": "src/models" }
+//
+// Returns None when there is no block or its body is not a JSON object.
+fn extract_a6_tool(content: &str) -> Option<serde_json::Value> {
+    let marker = "```a6-tool";
+    let start = content.find(marker)?;
+    // Skip to the end of the fence-open line (past any trailing space + newline).
+    let after = &content[start + marker.len()..];
+    let body_start = after.find('\n')? + 1;
+    let rest = &after[body_start..];
+    let end = rest.find("```")?;
+    let json_str = rest[..end].trim();
+    let v: Value = serde_json::from_str(json_str).ok()?;
+    if v.is_object() { Some(v) } else { None }
+}
+
 /// Start the proxy listener on localhost:8080.
 /// Each connection is handled in its own thread.
 ///
@@ -155,9 +180,59 @@ fn handle_connection<D: ToolDispatcher>(mut client: TcpStream, dispatcher: &D, u
                 // Loop — re-query with updated messages.
             }
             _ => {
-                // No tool_calls, or max iterations reached — return response.
-                let _ = client.write_all(http_200(&response_body).as_bytes());
-                return;
+                // No native tool_calls. Path B: if the model emitted an
+                // ```a6-tool``` block, dispatch it and re-query — the same
+                // loop, for models/servers that don't produce OpenAI tool_calls.
+                let fenced = response_json
+                    .pointer("/choices/0/message/content")
+                    .and_then(|v| v.as_str())
+                    .and_then(extract_a6_tool);
+
+                match fenced {
+                    Some(mut call) if iterations < MAX_TOOL_ITERATIONS => {
+                        iterations += 1;
+
+                        // Append the assistant message that carried the block.
+                        let assistant_msg = response_json
+                            .pointer("/choices/0/message")
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        if let Some(msgs) = payload["messages"].as_array_mut() {
+                            msgs.push(assistant_msg);
+                        }
+
+                        // tool name (default vscodium_workspace); the rest is args.
+                        let tool_name = call
+                            .get("tool")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("vscodium_workspace")
+                            .to_string();
+                        if let Some(obj) = call.as_object_mut() {
+                            obj.remove("tool");
+                        }
+
+                        let result = dispatcher
+                            .dispatch(&tool_name, call)
+                            .unwrap_or_else(|e| format!("Tool error: {e}"));
+
+                        // No tool_call_id exists in fenced mode, so a `tool`-role
+                        // message (which needs one) would be malformed — convey the
+                        // result as a user turn instead.
+                        let result_msg = serde_json::json!({
+                            "role": "user",
+                            "content": format!("Tool result ({tool_name}): {result}"),
+                        });
+                        if let Some(msgs) = payload["messages"].as_array_mut() {
+                            msgs.push(result_msg);
+                        }
+                        // Loop — re-query with the result in context.
+                    }
+                    _ => {
+                        // No tool call of either kind (or max iterations) — return.
+                        let _ = client.write_all(http_200(&response_body).as_bytes());
+                        return;
+                    }
+                }
             }
         }
     }
@@ -280,4 +355,41 @@ fn error_response(msg: &str) -> String {
         "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(), body
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_a6_tool;
+
+    #[test]
+    fn extracts_a_flat_block() {
+        let content = "Sure, creating it.\n```a6-tool\n{ \"op\": \"create_folder\", \"path\": \"src/models\" }\n```\nDone.";
+        let v = extract_a6_tool(content).expect("should find the block");
+        assert_eq!(v["op"], "create_folder");
+        assert_eq!(v["path"], "src/models");
+    }
+
+    #[test]
+    fn honors_an_optional_tool_field() {
+        let content = "```a6-tool\n{\"tool\":\"vscodium_workspace\",\"op\":\"list_workspace_folders\"}\n```";
+        let v = extract_a6_tool(content).unwrap();
+        assert_eq!(v["tool"], "vscodium_workspace");
+        assert_eq!(v["op"], "list_workspace_folders");
+    }
+
+    #[test]
+    fn none_when_no_block() {
+        assert!(extract_a6_tool("just a normal reply, no tools here").is_none());
+    }
+
+    #[test]
+    fn none_when_block_body_is_not_json_object() {
+        assert!(extract_a6_tool("```a6-tool\nnot json\n```").is_none());
+        assert!(extract_a6_tool("```a6-tool\n[1,2,3]\n```").is_none());
+    }
+
+    #[test]
+    fn none_when_fence_unclosed() {
+        assert!(extract_a6_tool("```a6-tool\n{\"op\":\"x\"}").is_none());
+    }
 }
