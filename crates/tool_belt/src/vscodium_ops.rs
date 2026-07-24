@@ -19,6 +19,9 @@ use crate::types::ToolError;
 /// extension executes it and writes the result to `outbox/<id>.json`. The op set
 /// mirrors the extension's PROTOCOL.md exactly.
 ///
+/// The VSCodium-side half of this bridge (the extension that reads the inbox and
+/// runs the ops via VSCodium's API) lives in this repo at `vscodium-extension/`.
+///
 /// Args: { "op": "create_folder" | "create_file" | "read_file" | "list_dir"
 ///          | "add_workspace_folder" | "remove_workspace_folder"
 ///          | "list_workspace_folders",

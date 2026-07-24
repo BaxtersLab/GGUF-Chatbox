@@ -1,0 +1,11 @@
+# Node (only present if someone installs @types/vscode for editor help — not required)
+node_modules/
+
+# Local runtime bridge data, if a dev points A6_TOOLS_DIR here
+inbox/
+outbox/
+processed/
+*.log
+
+# Packaged extension
+*.vsix

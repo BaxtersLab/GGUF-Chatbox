@@ -1,0 +1,43 @@
+{
+  "name": "a6-vscodium-tools",
+  "displayName": "A6 VSCodium Tools",
+  "description": "Headless tool bridge that lets SOC Agent 6 act on the workspace (create/read/write files and folders, manage workspace folders) through VSCodium's own extension API. Commands arrive as file drops in a watched inbox; results are written to an outbox — the same file-drop idiom the SOC bridge already uses.",
+  "version": "0.1.0",
+  "publisher": "BaxtersLab",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "a6Tools.status",
+        "title": "A6 Tools: Show Status"
+      }
+    ],
+    "configuration": {
+      "title": "A6 VSCodium Tools",
+      "properties": {
+        "a6Tools.bridgeDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory holding the tool bridge (inbox/outbox/processed). Empty = ~/.a6_vscodium_tools. The A6_TOOLS_DIR environment variable overrides this."
+        },
+        "a6Tools.pollMs": {
+          "type": "number",
+          "default": 500,
+          "description": "How often (ms) to scan the inbox for new command files."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
