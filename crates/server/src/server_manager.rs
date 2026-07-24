@@ -13,6 +13,151 @@ use crate::types::{ServerConfig, ServerStatus};
 // Global server process handle — no unsafe, no static mut.
 static SERVER: Mutex<Option<Child>> = Mutex::new(None);
 
+// ── Orphan protection ────────────────────────────────────────────────────────
+// llama-server holds the model in VRAM (GBs). If this app is force-killed or
+// crashes, Rust never runs the Drop/kill path, so the child SURVIVES as a
+// headless zombie squatting :8081 and its VRAM — invisible, and it blocks the
+// next start. Two defences:
+//   1. a Windows Job Object with KILL_ON_JOB_CLOSE: the OS kills the child when
+//      this process dies for ANY reason (structural — no cooperation needed);
+//   2. a reaper that clears leftovers before each start (covers orphans from a
+//      crash that predates this fix, or from an older build).
+// Raw FFI keeps the crate dependency-free (matches its tiny_http-only style).
+
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: u32 = 9;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimitInformation {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimitInformation {
+        basic_limit_information: BasicLimitInformation,
+        io_info: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    extern "system" {
+        fn CreateJobObjectW(attrs: *mut c_void, name: *const u16) -> *mut c_void;
+        fn SetInformationJobObject(job: *mut c_void, class: u32, info: *mut c_void, len: u32) -> i32;
+        fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
+        fn CloseHandle(h: *mut c_void) -> i32;
+    }
+
+    /// Create a job whose members are killed when the last handle to it closes —
+    /// i.e. when this process exits, however it exits. Handle returned as isize
+    /// so it can live in a static (raw pointers aren't Send).
+    pub fn create_kill_on_close() -> Option<isize> {
+        unsafe {
+            let h = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if h.is_null() {
+                return None;
+            }
+            let mut info = ExtendedLimitInformation::default();
+            info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                h,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                &mut info as *mut _ as *mut c_void,
+                std::mem::size_of::<ExtendedLimitInformation>() as u32,
+            );
+            if ok == 0 {
+                CloseHandle(h);
+                return None;
+            }
+            Some(h as isize)
+        }
+    }
+
+    /// Put a process (by raw HANDLE) under the job. Best-effort.
+    pub fn assign(job: isize, process: isize) -> bool {
+        unsafe { AssignProcessToJobObject(job as *mut c_void, process as *mut c_void) != 0 }
+    }
+
+    /// Close a job handle — kills its members when this was the last handle.
+    /// Used by tests to prove the kill-on-close contract.
+    pub fn close(job: isize) {
+        unsafe {
+            CloseHandle(job as *mut c_void);
+        }
+    }
+}
+
+#[cfg(windows)]
+static JOB: Mutex<Option<isize>> = Mutex::new(None);
+
+/// Adopt the spawned child into the process-lifetime job so it cannot outlive us.
+#[cfg(windows)]
+fn adopt_into_job(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    let mut guard = match JOB.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if guard.is_none() {
+        *guard = job::create_kill_on_close();
+    }
+    if let Some(j) = *guard {
+        let _ = job::assign(j, child.as_raw_handle() as isize);
+    }
+}
+
+#[cfg(not(windows))]
+fn adopt_into_job(_child: &Child) {}
+
+/// Kill any llama-server left over from a previous run before starting a new one,
+/// so at most one ever holds the model/VRAM. Best-effort and quiet.
+fn reap_orphan_servers() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM", "llama-server.exe"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("pkill")
+            .args(["-f", "llama-server"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 // The config the server was last started with. Lets the Start button relaunch
 // the server in chat-via-server mode, where there is no GUI-loaded local
 // instance to rebuild the config from. Kept across stop_server() — overwritten
@@ -45,6 +190,11 @@ pub fn start_server(config: &ServerConfig) -> Result<(), String> {
         let _ = child.wait();
     }
     *guard = None;
+
+    // Clear any UNTRACKED leftover (orphaned by a crash/force-kill of a previous
+    // run) so exactly one llama-server — and one copy of the model in VRAM —
+    // exists after this start.
+    reap_orphan_servers();
 
     let bin = resolve_llama_server_path();
 
@@ -91,6 +241,9 @@ pub fn start_server(config: &ServerConfig) -> Result<(), String> {
     }
 
     let child = cmd.spawn().map_err(|e| format!("failed to spawn llama-server: {e}"))?;
+    // Bind the child's lifetime to ours: if this process is force-killed or
+    // crashes, the OS tears the child down too (no headless VRAM zombie).
+    adopt_into_job(&child);
     *guard = Some(child);
     remember_config(config);   // enable Start to relaunch this in server mode
     Ok(())
@@ -203,5 +356,52 @@ mod tests {
             last_server_config().unwrap().model_path,
             PathBuf::from(r"C:\m\Qwythos.gguf")
         );
+    }
+
+    /// The orphan guarantee, proven on a stand-in child: a process placed in the
+    /// kill-on-close job MUST die when the last job handle closes — which is what
+    /// the OS does for us when this app is force-killed or crashes. Without this,
+    /// llama-server survives as a headless zombie holding GBs of VRAM.
+    #[cfg(windows)]
+    #[test]
+    fn job_kills_its_child_when_the_job_handle_closes() {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+
+        let job = super::job::create_kill_on_close().expect("job object created");
+
+        // A stand-in for llama-server: something that would otherwise run on.
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn()
+            .expect("spawned the stand-in child");
+
+        assert!(
+            super::job::assign(job, child.as_raw_handle() as isize),
+            "child should join the job"
+        );
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "child should still be alive before the job closes"
+        );
+
+        // Closing the last handle is exactly what process death does for us.
+        super::job::close(job);
+
+        let mut died = false;
+        for _ in 0..50 {
+            if child.try_wait().expect("try_wait").is_some() {
+                died = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if !died {
+            let _ = child.kill(); // don't leak the stand-in if the guarantee failed
+        }
+        assert!(died, "closing the job MUST kill its child (orphan protection)");
     }
 }
