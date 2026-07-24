@@ -103,6 +103,16 @@ impl ToolDispatcher for RecordingDispatcher {
     }
 }
 
+/// The REAL production dispatcher: the same tool_belt registry main.rs ships to
+/// the proxy (system_info + file_ops + vscodium_workspace).
+struct RealRegistryDispatcher(tool_belt::ToolRegistry);
+
+impl ToolDispatcher for RealRegistryDispatcher {
+    fn dispatch(&self, name: &str, args: Value) -> Result<String, String> {
+        self.0.dispatch(name, args).map_err(|e| e.to_string())
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -216,4 +226,70 @@ fn tool_call_loop_dispatches_then_returns_final_response() {
     assert_eq!(calls.len(), 1, "exactly one tool dispatch expected");
     assert_eq!(calls[0].0, "system_info");
     assert_eq!(calls[0].1["detail"], "basic");
+}
+
+// ── Full-chain live tests (ignored: need live services) ───────────────────────
+// These wire the REAL production path end to end:
+//   proxy (real code) → real tool_belt registry → VscodiumTool → the real
+//   VSCodium extension → the workspace.
+// Run via the orchestration script, which starts A6's VSCodium and sets:
+//   A6_TOOLS_DIR  the live tool bridge dir the extension is watching
+//   A6_UPSTREAM   a live llama-server "host:port" (real-model variant only)
+
+/// Full wiring WITHOUT a model: a canned upstream turn carries the a6-tool block,
+/// so this deterministically proves proxy → registry → VscodiumTool → extension.
+#[test]
+#[ignore]
+fn full_chain_fenced_block_reaches_the_real_extension() {
+    let folder = std::env::var("A6_PROOF_FOLDER").unwrap_or_else(|_| "chain_proof".to_string());
+    let block_turn = serde_json::json!({
+        "choices": [{"message": {"role": "assistant",
+            "content": format!("Working on it.\n```a6-tool\n{{\"op\": \"create_folder\", \"path\": \"{folder}\"}}\n```")}}]
+    })
+    .to_string();
+    let final_turn =
+        serde_json::json!({"choices":[{"message":{"role":"assistant","content":"done"}}]}).to_string();
+
+    let upstream = fake_upstream(vec![block_turn, final_turn]);
+    let addr = spawn_proxy(upstream, RealRegistryDispatcher(tool_belt::default_registry()));
+
+    let resp = http_post(
+        &addr,
+        "/v1/chat/completions",
+        r#"{"messages":[{"role":"user","content":"make it"}],"max_tokens":64}"#,
+    );
+    eprintln!("PROXY RESPONSE: {resp}");
+    assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
+    assert!(resp.contains("done"), "loop should re-query and return the final turn: {resp}");
+}
+
+/// Full chain WITH a real model: the model itself must emit the a6-tool block.
+#[test]
+#[ignore]
+fn full_chain_real_model_emits_block_and_acts() {
+    let upstream = std::env::var("A6_UPSTREAM").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
+    let folder = std::env::var("A6_PROOF_FOLDER").unwrap_or_else(|_| "model_proof".to_string());
+    let addr = spawn_proxy(upstream, RealRegistryDispatcher(tool_belt::default_registry()));
+
+    // Mirrors the real Agent-6 tool rail from soc_ultralight's _local_agent_header.
+    let prompt = format!(
+        "[SOC LOOP — you are Agent 6.]\n\
+         WORKSPACE TOOL (Agent 6 only): to act on the workspace, output a fenced block \
+         tagged a6-tool holding ONE flat JSON object. The system runs it and returns the \
+         result. Example:\n\
+         ```a6-tool\n{{\"op\": \"create_folder\", \"path\": \"src/models\"}}\n```\n\
+         ops: create_folder, create_file (+\"content\"), read_file, list_dir.\n\n\
+         TASK: create a folder named {folder} in the workspace. \
+         Emit the a6-tool block now, nothing else."
+    );
+    let body = serde_json::json!({
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 300
+    })
+    .to_string();
+
+    let resp = http_post(&addr, "/v1/chat/completions", &body);
+    eprintln!("=== FULL PROXY RESPONSE ===\n{resp}\n=== END ===");
+    assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
 }
