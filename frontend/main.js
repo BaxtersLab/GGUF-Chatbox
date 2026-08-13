@@ -346,13 +346,28 @@ listen('chat-token', event => {
     ChatEngine.appendToken(token, true);
     return;
   }
-  // Filter out tag messages if enabled (robust matching)
+  // Filter out CLI-debris tag lines if enabled.
+  //
+  // This used to substring-match 'eof' / 'end of' / 'interrupted' anywhere in
+  // the line, which silently ate legitimate prose — "at the end of the day",
+  // "the program was interrupted", any sentence containing 'eof'. Local mode
+  // emits whole LINES, so one unlucky phrase dropped a whole line of the reply
+  // with no error and no trace. Match the actual debris markers instead: the
+  // whole (trimmed) line must BE the marker, not merely contain it.
   const rawTok = token || '';
-  // Remove leading non-alphanumeric characters (quotes, >, punctuation)
-  const cleaned = rawTok.replace(/^[^a-zA-Z0-9]+/, '').toLowerCase().trim();
-  const isInterrupted = cleaned.includes('interrupted by user') || cleaned.includes('interrupted');
-  const isEof = cleaned.includes('eof') || cleaned.includes('end of') || cleaned.includes('end-of') || cleaned.includes('end of input') || cleaned.includes('end of generation');
-  const isTag = isInterrupted || isEof;
+  const cleaned = rawTok.replace(/^[^a-zA-Z0-9[<]+/, '').toLowerCase().trim();
+  const DEBRIS = [
+    'eof',
+    '[end of text]',
+    '<|endoftext|>',
+    '<|im_end|>',
+    'end of input',
+    'end of generation',
+    'interrupted by user',
+  ];
+  const isTag = DEBRIS.includes(cleaned)
+    || /^\[?end[ -]of[ -]\w+\]?$/.test(cleaned)
+    || /^<\|.*\|>$/.test(cleaned);
   if (filterMsgTags && isTag) return;
   ChatEngine.appendToken(token);
 });
@@ -781,13 +796,49 @@ try { console.log('[ui] frontend/main.js loaded'); invoke('cmd_log', { line: '[u
     ChatEngine.stopGeneration();
   });
 
-  // ↺ New Chat — clear history (backend + pane) without touching the model.
+  // "wipe" — clear history (backend + pane) without touching the model.
+  // In-memory only. Anything already on disk survives this; that is what
+  // "shred" is for, and the two are named so the difference is visible.
   const newChatBtn = document.getElementById('btn-new-chat');
   if (newChatBtn) {
     newChatBtn.addEventListener('click', async () => {
       try { await invoke('cmd_stop_generation'); } catch (_) {}
       try { await invoke('cmd_clear_chat'); } catch (_) {}
       document.getElementById('messages').innerHTML = '';
+    });
+  }
+
+  // "shred" — the honest version of wipe.
+  //
+  // wipe clears the pane and memory. It does NOT touch the full prompt, the
+  // output and the run log that every local inference leaves in %TEMP%, nor the
+  // verbatim replies a SOC-triggered turn writes to
+  // ~/.gguf-chatbox/soc_bridge/replies/. Those survive the window, the app and
+  // a reboot — so clearing the chat while they sit there only feels safe.
+  // This destroys them and clears EVERY cd layer.
+  const scrubBtn = document.getElementById('btn-scrub-session');
+  if (scrubBtn) {
+    scrubBtn.addEventListener('click', async () => {
+      const ok = confirm(
+        'Shred session?\n\n' +
+        'Destroys the on-disk residue (prompt, output and run log in TEMP, plus ' +
+        'any SOC bridge replies) and clears the history in ALL cd layers.\n\n' +
+        'This cannot be undone. The loaded model is not touched.\n\n' +
+        'Note: on an SSD, overwriting is best-effort — it defeats casual ' +
+        'recovery, not forensic recovery.');
+      if (!ok) return;
+      try { await invoke('cmd_stop_generation'); } catch (_) {}
+      try {
+        const r = await invoke('cmd_scrub_session');
+        document.getElementById('messages').innerHTML = '';
+        if (window.ChatLayers) window.ChatLayers.viewLayer(0);
+        const failed = (r && r.failed && r.failed.length)
+          ? ` — ${r.failed.length} could not be removed (in use?)` : '';
+        alert(`Scrubbed ${r.files} file(s), ${r.bytes} bytes; ` +
+              `${r.layers_cleared} layer(s) cleared${failed}.`);
+      } catch (e) {
+        alert('Scrub failed: ' + e);
+      }
     });
   }
 

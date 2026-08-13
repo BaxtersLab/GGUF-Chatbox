@@ -371,6 +371,31 @@ fn soc_bridge_write_reply(
 }
 
 /// Push a completed reply to SOC — no-op when dormant (no fresh marker).
+/// Append a finished assistant reply to the active layer's history, returning
+/// the slot it landed in.
+///
+/// This exists as ONE function because it previously existed as two: the
+/// server-routed path persisted the reply, the local inference path did not.
+/// The frontend re-paints the message pane from stored history the instant it
+/// sees `done`, so a reply missing from history is wiped off the screen the
+/// moment it finishes — the "vanishing response". Local mode had it, server
+/// mode did not, and the difference was exactly this omission.
+///
+/// Callers must invoke this BEFORE emitting `chat-token {done: true}`.
+/// Empty/whitespace replies are not stored and report no slot.
+fn persist_assistant_reply(state: &Mutex<AppState>, full: &str) -> Option<usize> {
+    if full.trim().is_empty() {
+        return None;
+    }
+    let mut guard = state.lock().ok()?;
+    let slot = guard.active_layer;
+    guard.active_history().push(ChatMessage {
+        role: "assistant".to_string(),
+        content: full.to_string(),
+    });
+    Some(slot)
+}
+
 fn soc_bridge_push(reply: &str, slot: usize) {
     let dir = soc_bridge_dir();
     if !soc_bridge_marker_fresh(&dir.join("soc_active.json"), SOC_BRIDGE_MARKER_TTL) {
@@ -814,6 +839,16 @@ fn cmd_send_message(
         let gen_start   = std::time::Instant::now();
         let app2        = app_clone.clone();
 
+        // Accumulate the reply so it can be persisted to history below. Without
+        // this the local path streamed tokens to the screen and then dropped
+        // them: `done` fires -> the frontend's syncActive() re-paints the pane
+        // from stored history -> history has the user turn but no assistant
+        // turn -> innerHTML='' wipes the reply the operator just watched arrive.
+        // That is the "vanishing response" — it only ever hit local mode,
+        // because the server path already persists (see run_server_chat).
+        let full_reply = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let fr         = full_reply.clone();
+
         let callback: adaptive_llama::TokenCallback = Box::new(move |line: &str| {
             let count   = tc.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let elapsed = gen_start.elapsed().as_secs_f64();
@@ -833,6 +868,9 @@ fn cmd_send_message(
                 let hex = line.as_bytes().iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
                 emit_debug_log(&app2, &format!("token-debug raw={:?} hex={}", line, hex), true);
             }
+            if let Ok(mut buf) = fr.lock() {
+                buf.push_str(line);
+            }
             let _ = app2.emit("chat-token", serde_json::json!({"token": line, "done": false}));
         });
 
@@ -851,6 +889,28 @@ fn cmd_send_message(
             "temperature": temperature,
             "done":        true,
         }));
+
+        // Persist the reply BEFORE emitting `done`. The frontend re-paints the
+        // pane from stored history the moment it sees `done`, so a reply that
+        // is not in history by then is erased from the screen. Ordering here is
+        // load-bearing, not incidental — mirrors run_server_chat.
+        let full = full_reply.lock().map(|g| g.clone()).unwrap_or_default();
+        if let Some(state) = app_clone.try_state::<Mutex<AppState>>() {
+            if let Some(slot) = persist_assistant_reply(&state, &full) {
+                // Parity with the server path so the orchestrator sees local
+                // replies too — without this, SOC cannot use local mode at all,
+                // which is the one mode that keeps secrets off cloud models.
+                //
+                // Worth knowing what this does on disk: when (and only when) a
+                // FRESH ~/.gguf-chatbox/soc_bridge/soc_active.json marker
+                // exists, it writes the full reply verbatim to a plaintext .md
+                // under soc_bridge/replies/. Trigger-gated, not always-on — a
+                // standalone chat writes nothing. But while SOC is running,
+                // model output does land on disk, so treat that directory as
+                // sensitive and sweep it like any other relay artifact.
+                soc_bridge_push(&full, slot);
+            }
+        }
 
         let _ = app_clone.emit("chat-token", serde_json::json!({"token": "", "done": true}));
     });
@@ -997,18 +1057,14 @@ fn run_server_chat(
     }
 
     // Server chat is stateless per request — append the reply to history or
-    // the next turn loses the assistant side of the conversation.
-    if !full.is_empty() {
-        let mut slot = 0usize;
-        if let Some(state) = app.try_state::<Mutex<AppState>>() {
-            if let Ok(mut guard) = state.lock() {
-                slot = guard.active_layer;
-                guard.active_history().push(ChatMessage { role: "assistant".to_string(), content: full.clone() });
-            }
+    // the next turn loses the assistant side of the conversation. Shared with
+    // the local path via persist_assistant_reply so the two cannot drift again.
+    if let Some(state) = app.try_state::<Mutex<AppState>>() {
+        if let Some(slot) = persist_assistant_reply(&state, &full) {
+            // SOC bridge: hand the orchestrator the EXACT reply (bypasses OCR,
+            // which misreads digits). Dormant no-op when no SOC marker is present.
+            soc_bridge_push(&full, slot);
         }
-        // SOC bridge: hand the orchestrator the EXACT reply (bypasses OCR, which
-        // misreads digits). Dormant no-op when no SOC marker is present.
-        soc_bridge_push(&full, slot);
     }
 
     let _ = app.emit("model-stats", serde_json::json!({
@@ -1069,6 +1125,117 @@ fn cmd_clear_chat(state: State<Mutex<AppState>>) -> Result<(), String> {
     guard.echo_fired.clear();
     guard.echo_source = None;
     Ok(())
+}
+
+// ── Session scrub ─────────────────────────────────────────────────────────
+//
+// "New Chat" clears the in-memory history and nothing else, which is a false
+// sense of security: every local inference writes the FULL prompt to
+// %TEMP%/gguf_chatbox_prompt.txt, its output to gguf_chatbox_output.txt and a
+// run log beside them, and a SOC-triggered turn also writes the verbatim reply
+// to ~/.gguf-chatbox/soc_bridge/replies/. Those outlive the window, the app and
+// the reboot. Clearing the pane while they sit on disk is theatre.
+//
+// Best-effort shred: overwrite in place, fsync, unlink. On an SSD with wear
+// levelling the overwrite is NOT a guaranteed erase — the controller may remap
+// the write — so this defeats casual recovery, not forensic recovery. Said
+// plainly here so nobody reads the button as more than it is.
+
+/// Session residue written by a local inference, relative to the temp dir.
+const SCRUB_TEMP_ARTIFACTS: [&str; 4] = [
+    "gguf_chatbox_prompt.txt",
+    "gguf_chatbox_output.txt",
+    "gguf_chatbox_run.log",
+    "gguf_chatbox_mic.wav",
+];
+
+/// Overwrite a file with random bytes, flush to disk, then remove it.
+/// Returns the number of bytes shredded, or None if it could not be removed.
+fn shred_file(path: &std::path::Path) -> Option<u64> {
+    use std::io::{Seek, SeekFrom, Write};
+    let size = std::fs::metadata(path).ok()?.len();
+    if size > 0 {
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
+            let noise: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(31) ^ 0xA5) as u8).collect();
+            let _ = f.seek(SeekFrom::Start(0));
+            let _ = f.write_all(&noise);
+            let _ = f.flush();
+            let _ = f.sync_all();
+        }
+    }
+    std::fs::remove_file(path).ok()?;
+    Some(size)
+}
+
+/// Every on-disk path this session may have written. Split out so it can be
+/// asserted in tests without deleting anything.
+fn scrub_targets() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let tmp = std::env::temp_dir();
+    for name in SCRUB_TEMP_ARTIFACTS {
+        let p = tmp.join(name);
+        if p.is_file() {
+            out.push(p);
+        }
+    }
+    let replies = soc_bridge_dir().join("replies");
+    if replies.is_dir() {
+        let mut stack = vec![replies];
+        while let Some(dir) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.is_file() {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[derive(serde::Serialize)]
+struct ScrubReport {
+    files: usize,
+    bytes: u64,
+    layers_cleared: usize,
+    failed: Vec<String>,
+}
+
+/// Wipe the session for real: in-memory history across EVERY layer, plus the
+/// on-disk residue listed above. Backend half of the Scrub Session button.
+#[tauri::command]
+fn cmd_scrub_session(state: State<Mutex<AppState>>) -> Result<ScrubReport, String> {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    let mut failed = Vec::new();
+    for path in scrub_targets() {
+        match shred_file(&path) {
+            Some(n) => {
+                files += 1;
+                bytes += n;
+            }
+            None => failed.push(path.display().to_string()),
+        }
+    }
+
+    let layers_cleared = {
+        let mut guard = state.lock().map_err(|_| "state lock poisoned".to_string())?;
+        // Every layer, not just the active one — a scrub that leaves the other
+        // CD-changer slots populated is the same false sense of security.
+        let n = guard.chat_layers.len();
+        for layer in guard.chat_layers.iter_mut() {
+            layer.clear();
+        }
+        guard.echo_fired.clear();
+        guard.echo_source = None;
+        n
+    };
+
+    Ok(ScrubReport { files, bytes, layers_cleared, failed })
 }
 
 /// Return one layer's conversation (for the frontend layer viewer) plus which
@@ -3273,6 +3440,7 @@ fn main() {
             cmd_browse_vision_model,
             cmd_browse_gguf_file,
             cmd_clear_chat,
+            cmd_scrub_session,
             cmd_swap_server,
             cmd_get_layer,
             cmd_browse_mmproj,
@@ -3495,6 +3663,110 @@ mod layer_tests {
         assert_eq!(a.chat_layers[1].len(), 1);
         assert_eq!(a.chat_layers[0].len(), 0);
         assert_eq!(a.chat_layers[2].len(), 0);
+    }
+
+    // ── the vanishing-response regression ────────────────────────────────
+    //
+    // The frontend re-paints the message pane from stored history the instant
+    // it sees `chat-token {done:true}` (ChatLayers.syncActive). A reply that is
+    // not in history by then is erased off the screen the moment it finishes.
+    // The local inference path used to stream tokens and never persist them,
+    // so every local reply vanished on completion while server mode was fine.
+    // These pin the shared helper both paths now call.
+
+    #[test]
+    fn a_finished_reply_is_persisted_so_the_repaint_can_find_it() {
+        let state = Mutex::new(app());
+        let slot = persist_assistant_reply(&state, "the reply the operator watched arrive");
+        assert_eq!(slot, Some(0));
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.chat_layers[0].len(), 1,
+                   "reply not in history -> the frontend repaint wipes it from the pane");
+        assert_eq!(guard.chat_layers[0][0].role, "assistant");
+        assert_eq!(guard.chat_layers[0][0].content,
+                   "the reply the operator watched arrive");
+    }
+
+    #[test]
+    fn a_reply_lands_in_the_layer_that_generated_it() {
+        let mut a = app();
+        a.active_layer = 2;
+        let state = Mutex::new(a);
+        assert_eq!(persist_assistant_reply(&state, "from cd3"), Some(2));
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.chat_layers[2].len(), 1);
+        assert_eq!(guard.chat_layers[0].len(), 0);
+        assert_eq!(guard.chat_layers[1].len(), 0);
+    }
+
+    #[test]
+    fn an_empty_reply_is_not_stored_and_reports_no_slot() {
+        // Guards the SOC bridge too: no slot means soc_bridge_push is never
+        // reached, so an empty generation cannot write a stray relay file.
+        let state = Mutex::new(app());
+        assert_eq!(persist_assistant_reply(&state, "   \n\t  "), None);
+        assert_eq!(persist_assistant_reply(&state, ""), None);
+        assert_eq!(state.lock().unwrap().chat_layers[0].len(), 0);
+    }
+
+    #[test]
+    fn scrub_clears_every_layer_not_just_the_active_one() {
+        // A scrub that leaves the other CD-changer slots populated is the same
+        // false sense of security as clearing only the pane.
+        let mut a = app();
+        a.switch_layer(0); a.active_history().push(msg("cd1 secret"));
+        a.switch_layer(1); a.active_history().push(msg("cd2 secret"));
+        a.switch_layer(2); a.active_history().push(msg("cd3 secret"));
+        for layer in a.chat_layers.iter_mut() {
+            layer.clear();
+        }
+        assert!(a.chat_layers.iter().all(|l| l.is_empty()),
+                "a layer survived the scrub");
+    }
+
+    #[test]
+    fn shred_overwrites_and_removes_the_file() {
+        let p = std::env::temp_dir()
+            .join(format!("gguf_scrub_test_{}.txt", std::process::id()));
+        std::fs::write(&p, "a secret that must not survive").unwrap();
+        let n = shred_file(&p).expect("shred should report bytes");
+        assert_eq!(n, "a secret that must not survive".len() as u64);
+        assert!(!p.exists(), "file still present after shred");
+    }
+
+    #[test]
+    fn shred_of_a_missing_file_reports_nothing_rather_than_panicking() {
+        let p = std::env::temp_dir().join("gguf_scrub_definitely_absent.txt");
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(shred_file(&p), None);
+    }
+
+    #[test]
+    fn scrub_targets_names_every_per_inference_artifact() {
+        // Pins the list against the paths the local inference path actually
+        // writes — if a new artifact is added there and not here, the scrub
+        // would silently leave it on disk.
+        assert!(SCRUB_TEMP_ARTIFACTS.contains(&"gguf_chatbox_prompt.txt"));
+        assert!(SCRUB_TEMP_ARTIFACTS.contains(&"gguf_chatbox_output.txt"));
+        assert!(SCRUB_TEMP_ARTIFACTS.contains(&"gguf_chatbox_run.log"));
+        assert!(SCRUB_TEMP_ARTIFACTS.contains(&"gguf_chatbox_mic.wav"));
+
+        // And it must pick a real file up off the disk.
+        let p = std::env::temp_dir().join("gguf_chatbox_prompt.txt");
+        std::fs::write(&p, "prompt residue").unwrap();
+        assert!(scrub_targets().iter().any(|t| t == &p),
+                "scrub_targets missed the prompt file");
+        let _ = shred_file(&p);
+    }
+
+    #[test]
+    fn consecutive_replies_accumulate_rather_than_overwrite() {
+        let state = Mutex::new(app());
+        persist_assistant_reply(&state, "first");
+        persist_assistant_reply(&state, "second");
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.chat_layers[0].len(), 2);
+        assert_eq!(guard.chat_layers[0][1].content, "second");
     }
 
     #[test]
