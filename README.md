@@ -2,6 +2,17 @@
 
 # GGUF Chatbox
 
+> ### 🐧 Running Linux? Use the Linux build instead.
+>
+> This repository is the **Windows** line of development. A separate Linux build lives
+> at **[BaxtersLab/GGUF_Chatbox_Lin](https://github.com/BaxtersLab/GGUF_Chatbox_Lin)** and
+> carries the launcher, the GSettings schema shim, the snap environment scrub and the
+> Debian packaging that this tree does not have. It requires **Ubuntu 26.04 LTS / GNOME 50
+> or newer**.
+>
+> Do not use this repository on Linux. It lacks the schema shim, without which WebKitGTK
+> aborts at startup on GNOME 50.
+
 A Windows desktop app built with [Tauri v2](https://tauri.app) that runs local GGUF language models through **llama-server** and exposes them as OpenAI-compatible endpoints — so tools like [Continue.dev](https://continue.dev), custom agents, and any OpenAI-compatible client can connect without cloud dependencies.
 
 ---
@@ -27,7 +38,7 @@ A Windows desktop app built with [Tauri v2](https://tauri.app) that runs local G
 
 | Requirement | Notes |
 |-------------|-------|
-| Windows 10 or 11 (64-bit) | The app is Windows-only at this time |
+| Windows 10 or 11 (64-bit) | The platform this repository targets. For Linux see [GGUF_Chatbox_Lin](https://github.com/BaxtersLab/GGUF_Chatbox_Lin) |
 | [Rust toolchain](https://rustup.rs/) | Required to build from source |
 | [Node.js](https://nodejs.org/) (optional) | Only needed if you modify the frontend |
 | llama.cpp | Auto-downloaded on first launch if not found |
@@ -220,26 +231,34 @@ Set a Python interpreter and (optionally) model weights in **Advanced Settings**
 
 ## License
 
-This project is released under the **MIT License**.
+This project is released under the **Apache License 2.0**. The full text is in
+[`LICENSE`](LICENSE).
 
-```
-MIT License
+Apache-2.0 was chosen over MIT deliberately: it carries an express patent grant with a
+retaliation clause, requires that modifications be stated, and disclaims trademark
+rights. MIT provides none of those. The Linux build at
+[GGUF_Chatbox_Lin](https://github.com/BaxtersLab/GGUF_Chatbox_Lin) is licensed
+identically.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+> **Note on the earlier MIT release.** This project was previously published under the
+> MIT License. That relicensing is forward-looking only: anyone who already received a
+> copy under MIT keeps the rights MIT granted them for that copy. Apache-2.0 applies from
+> this commit onward.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+### llama.cpp
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+`llama-server` is **MIT** licensed and is **not bundled with this application**. It is
+downloaded from upstream at first launch, or supplied by you — an external tool whose
+licence is not an obligation this package carries.
+
+### Models and model output
+
+**This licence covers the application only. It says nothing about the models you run
+through it, or about what those models produce.**
+
+Every GGUF model carries its own licence, chosen by whoever trained it, and they differ
+enormously — some permissive, some bespoke community licences with acceptable-use
+policies, some non-commercial only, and a few placing explicit conditions on generated
+output. You choose the model, so you are responsible for complying with its licence,
+including for anything you do with what it generates. The presence of a downloader in
+this app is not a statement about any model it can fetch.
